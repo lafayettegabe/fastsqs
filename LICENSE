@@ -1,0 +1,5 @@
+# queue
+
+Async SQS routing and middleware library.
+
+See README.md for usage and details.
