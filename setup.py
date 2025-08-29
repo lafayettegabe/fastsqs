@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastsqs",
-    version="0.1.2",
+    version="0.1.3",
     description="Async SQS routing and middleware library",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",

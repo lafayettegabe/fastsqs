@@ -45,7 +45,7 @@ class GreetingPayload(BaseModel):
     type: str
     message: str
 
-router = QueueRouter("type")
+router = QueueRouter(key="type")
 
 @router.route("greeting", model=GreetingPayload)
 async def handle_greeting(payload, record, context, ctx, data):
@@ -54,8 +54,18 @@ async def handle_greeting(payload, record, context, ctx, data):
 app = QueueApp(title="Greeting SQS App", debug=True)
 app.include_router(router)
 
+
 def lambda_handler(event, context):
     return app.handler(event, context)
+```
+
+### Example Payload
+
+```json
+{
+  "type": "greeting",
+  "message": "Hello from SQS!"
+}
 ```
 
 ### Add Middleware
