@@ -41,15 +41,14 @@ pip install fastsqs
 ### Basic FastAPI-like Example
 
 ```python
-from fastsqs import FastSQS
-from pydantic import BaseModel
+from fastsqs import FastSQS, SQSEvent
 
-class UserCreated(BaseModel):
+class UserCreated(SQSEvent):
     user_id: str
     email: str
     name: str
 
-class OrderProcessed(BaseModel):
+class OrderProcessed(SQSEvent):
     order_id: str
     amount: float
 
@@ -117,7 +116,7 @@ app = FastSQS(
 FastSQS automatically handles field name variations:
 
 ```python
-class UserEvent(BaseModel):
+class UserEvent(SQSEvent):
     user_id: str  # Will match: user_id, userId, USER_ID, etc.
     first_name: str  # Will match: first_name, firstName, etc.
 
