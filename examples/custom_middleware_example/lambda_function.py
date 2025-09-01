@@ -1,55 +1,68 @@
 
-from fastsqs import QueueApp, QueueRouter
+from fastsqs import FastSQS, SQSEvent
 import json
 from middleware.custom_logging import CustomLoggingMiddleware
 from middleware.error_handling import ErrorHandlingMiddleware
 from middleware.metrics import MetricsMiddleware
 
 
-user_router = QueueRouter(key="action")
+class UserLogin(SQSEvent):
+    user_id: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "login"
 
-app = QueueApp(
+class UserLogout(SQSEvent):
+    user_id: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "logout"
+
+class InvalidMessage(SQSEvent):
+    data: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "invalid"
+
+
+app = FastSQS(
     title="Custom Middleware Example App",
     description="Example showing custom middleware usage",
     version="1.0.0",
     debug=True,
+    message_type_key="action"
 )
 
 app.add_middleware(CustomLoggingMiddleware())
 app.add_middleware(ErrorHandlingMiddleware())
 app.add_middleware(MetricsMiddleware())
 
-app.include_router(user_router)
+
+@app.route(UserLogin)
+async def handle_user_login(msg: UserLogin):
+    print(f"User logged in: {msg.user_id}")
+    return {"status": "success", "userId": msg.user_id}
 
 
-@user_router.route("login")
-async def handle_user_login(payload, record, context, ctx):
-    """Handle user login messages."""
-    print(f"User logged in: {payload.get('userId')}")
-    return {"status": "success", "userId": payload.get("userId")}
+@app.route(UserLogout)
+async def handle_user_logout(msg: UserLogout):
+    print(f"User logged out: {msg.user_id}")
+    return {"status": "success", "userId": msg.user_id}
 
 
-@user_router.route("logout")
-async def handle_user_logout(payload, record, context, ctx):
-    """Handle user logout messages."""
-    print(f"User logged out: {payload.get('userId')}")
-    return {"status": "success", "userId": payload.get("userId")}
-
-
-@user_router.route("invalid")
-async def handle_invalid_message(payload, record, context, ctx):
-    """Handle invalid messages (will trigger error middleware)."""
+@app.route(InvalidMessage)
+async def handle_invalid_message(msg: InvalidMessage):
+    print(f"Processing invalid message: {msg.data}")
     raise ValueError("This is a test error")
 
 def lambda_handler(event, context):
     return app.handler(event, context)
 
 
-# -----------------------------------------------------------------------
-# -------------------------------- TESTS --------------------------------
-
 def test_custom_middleware():
-    """Test the custom middleware functionality."""
     print("=== Testing Custom Middleware ===")
 
     test_events = [
@@ -57,7 +70,7 @@ def test_custom_middleware():
             "Records": [
                 {
                     "messageId": "msg-001",
-                    "body": json.dumps({"action": "login", "userId": "user123"}),
+                    "body": json.dumps({"action": "login", "user_id": "user123"}),
                     "attributes": {},
                 }
             ]
@@ -66,7 +79,7 @@ def test_custom_middleware():
             "Records": [
                 {
                     "messageId": "msg-002",
-                    "body": json.dumps({"action": "logout", "userId": "user123"}),
+                    "body": json.dumps({"action": "logout", "user_id": "user123"}),
                     "attributes": {},
                 }
             ]

@@ -1,49 +1,72 @@
-from fastsqs import QueueApp, QueueRouter, LoggingMiddleware, TimingMsMiddleware
+from fastsqs import FastSQS, SQSEvent, LoggingMiddleware, TimingMsMiddleware
 import json
+import asyncio
 
 
-user_router = QueueRouter(key="action")
+class UserLogin(SQSEvent):
+    user_id: str
+    password: str
+    timestamp: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "login"
 
-app = QueueApp(
+class UserLogout(SQSEvent):
+    user_id: str
+    session_id: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "logout"
+
+class ProfileUpdate(SQSEvent):
+    user_id: str
+    ssn: str
+    email: str
+    
+    @classmethod
+    def get_message_type(cls) -> str:
+        return "profile_update"
+
+
+app = FastSQS(
     title="Middleware Example App",
     description="Example showing built-in middleware usage",
     version="1.0.0",
     debug=True,
+    message_type_key="action"
 )
 
 app.add_middleware(LoggingMiddleware(mask_fields=["password", "ssn"]))
 app.add_middleware(TimingMsMiddleware())
 
-app.include_router(user_router)
 
-@user_router.route("login")
-async def handle_user_login(payload, record, context, ctx):
-    print(f"User logged in: {payload.get('userId')}")
+@app.route(UserLogin)
+async def handle_user_login(msg: UserLogin):
+    print(f"User logged in: {msg.user_id}")
     await asyncio.sleep(0.1)
-    return {"status": "success", "userId": payload.get("userId")}
+    return {"status": "success", "userId": msg.user_id}
 
 
-@user_router.route("logout")
-async def handle_user_logout(payload, record, context, ctx):
-    print(f"User logged out: {payload.get('userId')}")
+@app.route(UserLogout)
+async def handle_user_logout(msg: UserLogout):
+    print(f"User logged out: {msg.user_id}")
     await asyncio.sleep(0.05)
-    return {"status": "success", "userId": payload.get("userId")}
+    return {"status": "success", "userId": msg.user_id}
 
 
-@user_router.route("profile_update")
-async def handle_profile_update(payload, record, context, ctx):
-    print(f"Profile updated for user: {payload.get('userId')}")
+@app.route(ProfileUpdate)
+async def handle_profile_update(msg: ProfileUpdate):
+    print(f"Profile updated for user: {msg.user_id}")
     await asyncio.sleep(0.2)
-    return {"status": "success", "userId": payload.get("userId")}
+    return {"status": "success", "userId": msg.user_id}
 
 def lambda_handler(event, context):
     return app.handler(event, context)
 
 
-# -----------------------------------------------------------------------
-# -------------------------------- TESTS --------------------------------
-
-async def test_middleware():
+def test_middleware():
     print("=== Testing Middleware ===")
 
     test_events = [
@@ -54,7 +77,7 @@ async def test_middleware():
                     "body": json.dumps(
                         {
                             "action": "login",
-                            "userId": "user123",
+                            "user_id": "user123",
                             "password": "secret123",
                             "timestamp": "2024-01-01T10:00:00Z",
                         }
@@ -70,7 +93,7 @@ async def test_middleware():
                     "body": json.dumps(
                         {
                             "action": "profile_update",
-                            "userId": "user123",
+                            "user_id": "user123",
                             "ssn": "123-45-6789",
                             "email": "user@example.com",
                         }
@@ -86,8 +109,8 @@ async def test_middleware():
                     "body": json.dumps(
                         {
                             "action": "logout",
-                            "userId": "user123",
-                            "sessionId": "sess-456",
+                            "user_id": "user123",
+                            "session_id": "sess-456",
                         }
                     ),
                     "attributes": {},

@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastsqs",
-    version="0.1.4",
-    description="Async SQS routing and middleware library",
+    version="0.2.0",
+    description="FastAPI-like, modern async SQS message processing for Python",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Gabriel LaFayette",

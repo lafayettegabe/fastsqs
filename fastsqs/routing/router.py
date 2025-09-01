@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 from pydantic import BaseModel, ValidationError
 
@@ -224,30 +225,39 @@ class QueueRouter:
         await run_middlewares(all_mws, "before", handler_payload, record, context, ctx)
         
         try:
-            data = None
             if model is not None:
                 try:
-                    data = model.model_validate(payload)
+                    msg = model.model_validate(payload)
                 except ValidationError as e:
                     raise ValidationError(f"Validation failed for {self.key}: {e}")
-                    
-            handler_kwargs = {
-                "payload": handler_payload,
-                "record": record,
-                "context": context,
-                "ctx": ctx,
-            }
-            
-            if self.payload_scope == "both":
-                handler_kwargs["current_payload"] = payload
-                handler_kwargs["root_payload"] = root_payload
+            else:
+                sig = inspect.signature(handler)
+                params = list(sig.parameters.values())
                 
-            if data is not None:
-                handler_kwargs["data"] = data
-                handler_kwargs["model"] = data
-                
-            await invoke_handler(handler, **handler_kwargs)
+                if params and hasattr(params[0].annotation, 'model_validate'):
+                    model_class = params[0].annotation
+                    try:
+                        msg = model_class.model_validate(payload)
+                    except ValidationError as e:
+                        raise ValidationError(f"Validation failed for {model_class.__name__}: {e}")
+                else:
+                    from ..events import SQSEvent
+                    msg = SQSEvent.model_validate(payload)
             
+            sig = inspect.signature(handler)
+            params = list(sig.parameters.keys())
+            
+            if len(params) >= 2 and 'ctx' in params[1]:
+                if inspect.iscoroutinefunction(handler):
+                    result = await handler(msg, ctx)
+                else:
+                    result = handler(msg, ctx)
+            else:
+                if inspect.iscoroutinefunction(handler):
+                    result = await handler(msg)
+                else:
+                    result = handler(msg)
+                
         except Exception as e:
             err = e
             raise

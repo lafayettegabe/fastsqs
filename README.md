@@ -1,6 +1,6 @@
-# fastsqs
+# FastSQS
 
-**Fast, modern, async SQS routing and middleware for Python.**
+**FastAPI-like, modern async SQS message processing for Python.**
 
 [![PyPI version](https://img.shields.io/pypi/v/fastsqs.svg)](https://pypi.org/project/fastsqs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -9,16 +9,15 @@
 
 ## Key Features
 
-- 🚀 **High Performance:** Async message routing for AWS SQS, designed for speed and scalability
-- 🧩 **Declarative Routing:** Organize your SQS message handling with nested routers and decorators
+- 🚀 **FastAPI-like API:** Familiar decorator-based routing with automatic type inference
+- 🔒 **Pydantic Validation:** Automatic message validation and serialization using Pydantic models
 - 🔄 **Auto Async/Sync:** Write handlers as sync or async functions - framework handles both automatically
-- 🔒 **Validation:** Per-route payload validation using Pydantic models
-- 🛠️ **Middleware:** Add before/after hooks for logging, timing, masking, and more
+- �️ **Middleware Support:** Built-in and custom middleware for logging, timing, and more
 - 🦾 **Partial Batch Failure:** Native support for AWS Lambda batch failure responses
-- 🔀 **FIFO & Standard Queues:** Full support for both SQS queue types with ordered processing for FIFO
-- 🎯 **Wildcard & Default Routes:** Flexible routing with wildcard matching and fallback handlers
-- 🏗️ **Nested Routing:** Build complex routing hierarchies with subrouters
-- 🐍 **Pythonic & Intuitive:** Type hints, editor support, and a familiar API for Python developers
+- 🔀 **FIFO & Standard Queues:** Full support for both SQS queue types with proper ordering
+- 🎯 **Flexible Matching:** Automatic field name normalization (camelCase ↔ snake_case)
+- 🏗️ **Nested Routing:** QueueRouter support for complex routing scenarios
+- 🐍 **Type Safety:** Full type hints and editor support throughout
 
 ---
 
@@ -39,52 +38,59 @@ pip install fastsqs
 
 ## Quick Start
 
-### Basic Example
+### Basic FastAPI-like Example
 
 ```python
-from fastsqs import QueueApp, QueueRouter
+from fastsqs import FastSQS
 from pydantic import BaseModel
 
-class GreetingPayload(BaseModel):
-    type: str
-    message: str
+class UserCreated(BaseModel):
+    user_id: str
+    email: str
+    name: str
 
-# Create router
-router = QueueRouter(key="type")
+class OrderProcessed(BaseModel):
+    order_id: str
+    amount: float
 
-# Sync handler - no async needed!
-@router.route("greeting", model=GreetingPayload)
-def handle_greeting(payload, record, context, ctx, data):
-    print(f"Greeting: {data.message}")
+# Create FastSQS app
+app = FastSQS(debug=True)
 
-# Async handler also works
-@router.route("async_task")
-async def handle_async_task(payload, ctx):
-    # Do async work here
-    print(f"Processing async: {payload}")
+# Route messages using Pydantic models
+@app.route(UserCreated)
+async def handle_user_created(msg: UserCreated):
+    print(f"User created: {msg.name} ({msg.email})")
 
-# Create app
-app = QueueApp(title="My SQS App", debug=True)
-app.include_router(router)
+@app.route(OrderProcessed)
+def handle_order_processed(msg: OrderProcessed):
+    print(f"Order {msg.order_id}: ${msg.amount}")
 
-# Lambda handler
+# Default handler for unmatched messages
+@app.default()
+def handle_unknown(payload, ctx):
+    print(f"Unknown message: {payload}")
+
+# AWS Lambda handler
 def lambda_handler(event, context):
     return app.handler(event, context)
 ```
 
-### Example Payloads
+### Example SQS Message Payloads
 
 ```json
 {
-  "type": "greeting",
-  "message": "Hello from SQS!"
+  "type": "user_created",
+  "user_id": "123",
+  "email": "user@example.com",
+  "name": "John Doe"
 }
 ```
 
 ```json
 {
-  "type": "async_task",
-  "data": "Some async processing data"
+  "type": "order_processed",
+  "order_id": "ord-456",
+  "amount": 99.99
 }
 ```
 
@@ -95,9 +101,9 @@ def lambda_handler(event, context):
 ### FIFO Queue Support
 
 ```python
-from fastsqs import QueueApp, QueueType
+from fastsqs import FastSQS, QueueType
 
-app = QueueApp(
+app = FastSQS(
     queue_type=QueueType.FIFO,
     debug=True
 )
@@ -106,49 +112,72 @@ app = QueueApp(
 # Different groups are processed in parallel
 ```
 
-### Wildcard and Default Routes
+### Flexible Field Matching
+
+FastSQS automatically handles field name variations:
 
 ```python
-router = QueueRouter(key="action")
+class UserEvent(BaseModel):
+    user_id: str  # Will match: user_id, userId, USER_ID, etc.
+    first_name: str  # Will match: first_name, firstName, etc.
 
-# Handle specific routes
-@router.route("process")
-def handle_process(payload):
-    print("Processing...")
-
-# Wildcard - matches any value
-@router.wildcard()
-def handle_any_action(payload, ctx):
-    action = payload.get("action", "unknown")
-    print(f"Handling action: {action}")
-
-# Default - called when key is missing
-@router.route()  # No value = default
-def handle_no_action(payload):
-    print("No action specified")
+@app.route(UserEvent)
+def handle_user(msg: UserEvent):
+    print(f"User: {msg.user_id}, Name: {msg.first_name}")
 ```
 
-### Nested Routing
+SQS messages with different field formats work automatically:
+```json
+{"type": "user_event", "userId": "123", "firstName": "John"}
+```
+
+### Middleware
 
 ```python
-# Main router routes by "service"
-main_router = QueueRouter(key="service")
+from fastsqs.middleware import TimingMiddleware, LoggingMiddleware
 
-# Sub-router routes by "action" within a service
+# Built-in middleware
+app.add_middleware(TimingMiddleware())
+app.add_middleware(LoggingMiddleware())
+
+# Custom middleware
+from fastsqs.middleware import Middleware
+
+class AuthMiddleware(Middleware):
+    async def before(self, payload, record, context, ctx):
+        if not payload.get("auth_token"):
+            raise ValueError("Missing auth token")
+    
+    async def after(self, payload, record, context, ctx, error):
+        if error:
+            print(f"Handler failed: {error}")
+
+app.add_middleware(AuthMiddleware())
+```
+
+### Complex Routing with QueueRouter
+
+For complex nested routing scenarios, you can still use QueueRouter:
+
+```python
+from fastsqs import FastSQS, QueueRouter
+
+# Main FastSQS app
+app = FastSQS()
+
+# Complex router for nested routing
 user_router = QueueRouter(key="action")
 
 @user_router.route("create")
-def create_user(payload):
-    print(f"Creating user: {payload}")
+def create_user(msg, ctx):
+    print(f"Creating user: {msg}")
 
-@user_router.route("delete")
-def delete_user(payload):
-    print(f"Deleting user: {payload}")
+@user_router.route("delete") 
+def delete_user(msg, ctx):
+    print(f"Deleting user: {msg}")
 
-# Attach sub-router
-main_router.subrouter("users", user_router)
-
-app.include_router(main_router)
+# Include the router for complex scenarios
+app.include_router(user_router)
 ```
 
 Example payload for nested routing:
@@ -160,70 +189,6 @@ Example payload for nested routing:
 }
 ```
 
-### Middleware
-
-```python
-from fastsqs import Middleware, TimingMsMiddleware, LoggingMiddleware
-
-# Built-in timing middleware
-app.add_middleware(TimingMsMiddleware())
-
-# Built-in logging middleware
-app.add_middleware(LoggingMiddleware(
-    include_payload=True,
-    mask_fields=["password", "secret"]
-))
-
-# Custom middleware
-class AuthMiddleware(Middleware):
-    async def before(self, payload, record, context, ctx):
-        # Validate auth token
-        if not payload.get("auth_token"):
-            raise ValueError("Missing auth token")
-        print("Auth validated")
-    
-    async def after(self, payload, record, context, ctx, error):
-        if error:
-            print(f"Handler failed: {error}")
-        else:
-            print("Handler completed successfully")
-
-app.add_middleware(AuthMiddleware())
-```
-
-### Payload Scoping
-
-```python
-# Control what payload is passed to handlers
-router = QueueRouter(
-    key="type",
-    payload_scope="both"  # "root", "current", or "both"
-)
-
-@router.route("nested")
-def handle_nested(payload, current_payload, root_payload):
-    # payload = root_payload (for "both" scope)
-    # current_payload = current level payload
-    # root_payload = original payload
-    pass
-```
-
-### Error Handling
-
-```python
-app = QueueApp(
-    on_decode_error="skip",      # Skip invalid JSON
-    on_validation_error="skip",   # Skip validation failures
-    strict=False                 # Don't error on unmatched routes
-)
-
-# Custom default handler for unmatched routes
-def default_handler(payload, ctx):
-    print(f"Unhandled message: {payload}")
-
-app = QueueApp(default_handler=default_handler)
-```
-
 ---
 
 ## Package Structure
@@ -232,17 +197,18 @@ The library is organized into clean, modular components:
 
 ```
 fastsqs/
-├── __init__.py          # Main exports
+├── __init__.py          # Main exports (FastSQS, QueueRouter, etc.)
+├── app.py               # Main FastSQS class  
+├── events.py            # SQSEvent base class with field normalization
 ├── types.py             # Type definitions
 ├── exceptions.py        # Custom exceptions
 ├── utils.py             # Utility functions
-├── app.py              # Main QueueApp class
-├── middleware/         # Middleware components
+├── middleware/          # Middleware components
 │   ├── __init__.py
-│   ├── base.py         # Base middleware
+│   ├── base.py         # Base middleware class
 │   ├── timing.py       # Timing middleware
 │   └── logging.py      # Logging middleware
-└── routing/            # Routing components
+└── routing/            # QueueRouter for complex routing
     ├── __init__.py
     ├── entry.py        # Route entry
     └── router.py       # Router implementation
@@ -252,30 +218,81 @@ fastsqs/
 
 ## How it Works
 
-- **Automatic Async/Sync:** Write handlers as regular functions or async functions - the framework automatically detects and handles both
-- **Routing:** Use `QueueRouter` to route messages by payload fields. Decorators make it easy to register handlers
-- **Validation:** Attach Pydantic models to routes for automatic payload validation
-- **Middleware:** Add global or per-route middleware for logging, timing, masking, etc.
-- **Batch Failure:** Handles partial failures for SQS-triggered Lambda functions, so only failed messages are retried
-- **FIFO Support:** Sequential processing within message groups while maintaining parallelism across groups
+### Message Processing Flow
+
+1. **Message Parsing:** JSON message body is parsed and validated
+2. **Route Matching:** Message type is extracted and matched to registered routes
+3. **Model Validation:** Pydantic model validates and normalizes the message data
+4. **Handler Execution:** Your handler function is called with the validated model
+5. **Error Handling:** Any errors result in batch item failures for SQS retry
+
+### Key Concepts
+
+- **FastAPI-like Decorators:** Use `@app.route(Model)` to register handlers
+- **Automatic Type Inference:** Handler signature determines what parameters to pass
+- **Field Normalization:** camelCase ↔ snake_case conversion happens automatically
+- **Flexible Matching:** Multiple field name variants are supported out of the box
+- **Standard Error Handling:** All errors result in message failure and SQS retry/DLQ
+
+---
+
+## Error Handling
+
+FastSQS uses a simple, predictable error handling strategy:
+
+| Error Type | Behavior | SQS Result |
+|------------|----------|------------|
+| **Invalid JSON** | `InvalidMessage` exception | Message fails → retry/DLQ |
+| **Validation Error** | `InvalidMessage` exception | Message fails → retry/DLQ |
+| **No Route Found** | `RouteNotFound` exception | Message fails → retry/DLQ |
+| **Handler Exception** | Exception propagates | Message fails → retry/DLQ |
+
+All failures are added to `batchItemFailures` in the Lambda response, allowing SQS to handle retries and dead letter queues according to your queue configuration.
 
 ---
 
 ## Performance Features
 
+- **FastAPI-like Efficiency:** Minimal overhead with fast dictionary-based routing
 - **Parallel Processing:** Standard SQS messages are processed concurrently
 - **FIFO Ordering:** FIFO messages maintain order within message groups
 - **Partial Batch Failures:** Only failed messages are retried, not entire batches
-- **Efficient Routing:** Fast dictionary-based message routing
-- **Memory Efficient:** Minimal overhead per message
+- **Type Safety:** Full type checking and validation with Pydantic
+- **Memory Efficient:** Minimal overhead per message with automatic cleanup
+
+---
+
+## Migration from QueueRouter
+
+If you're upgrading from the old QueueRouter-based API:
+
+**Old Way (QueueRouter):**
+```python
+router = QueueRouter(key="type")
+
+@router.route("user_created", model=UserCreated)
+def handle_user(payload, record, context, ctx, data):
+    print(f"User: {data.name}")
+```
+
+**New Way (FastSQS):**
+```python
+app = FastSQS()
+
+@app.route(UserCreated)
+def handle_user(msg: UserCreated):
+    print(f"User: {msg.name}")
+```
+
+The new API is cleaner, more type-safe, and follows FastAPI conventions. QueueRouter is still available for complex nested routing scenarios.
 
 ---
 
 ## Documentation
 
-- [API Reference](#) (coming soon)
-- [Tutorials](#) (coming soon)
-- [Examples](#) (see `examples/`)
+- **Examples:** See the `examples/` directory for complete working examples
+- **Type Safety:** Full type hints throughout for excellent IDE support
+- **API Reference:** All classes and methods include comprehensive docstrings
 
 ---
 
@@ -292,4 +309,4 @@ This project is licensed under the terms of the MIT license.
 
 ---
 
-**Ready to build async, robust SQS message processors? Try fastsqs today!**
+**Ready to build type-safe, FastAPI-like SQS processors? Try FastSQS today!**

@@ -21,7 +21,7 @@ python lambda_function.py
 
 ## What it demonstrates
 
-- Adding built-in middleware to QueueApp
+- Adding built-in middleware to FastSQS
 - Field masking for sensitive data (password, SSN)
 - Performance timing measurement
 - Middleware execution order

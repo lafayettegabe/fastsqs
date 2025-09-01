@@ -1,8 +1,9 @@
 from .types import QueueType, Handler, RouteValue
 from .exceptions import RouteNotFound, InvalidMessage
-from .app import QueueApp
+from .app import FastSQS
 from .routing import QueueRouter, RouteEntry
 from .middleware import Middleware, TimingMsMiddleware, LoggingMiddleware
+from .events import SQSEvent
 
 __all__ = [
     "QueueType",
@@ -10,10 +11,11 @@ __all__ = [
     "RouteValue",
     "RouteNotFound",
     "InvalidMessage",
-    "QueueApp",
+    "FastSQS",
     "QueueRouter",
     "RouteEntry", 
     "Middleware",
     "TimingMsMiddleware",
     "LoggingMiddleware",
+    "SQSEvent",
 ]
