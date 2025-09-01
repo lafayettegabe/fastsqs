@@ -10,7 +10,7 @@
 ## Key Features
 
 - 🚀 **FastAPI-like API:** Familiar decorator-based routing with automatic type inference
-- 🔒 **Pydantic Validation:** Automatic message validation and serialization using Pydantic models
+- 🔒 **Pydantic Validation:** Automatic message validation and serialization using SQSEvent models
 - 🔄 **Auto Async/Sync:** Write handlers as sync or async functions - framework handles both automatically
 - �️ **Middleware Support:** Built-in and custom middleware for logging, timing, and more
 - 🦾 **Partial Batch Failure:** Native support for AWS Lambda batch failure responses
@@ -55,7 +55,7 @@ class OrderProcessed(SQSEvent):
 # Create FastSQS app
 app = FastSQS(debug=True)
 
-# Route messages using Pydantic models
+# Route messages using SQSEvent models
 @app.route(UserCreated)
 async def handle_user_created(msg: UserCreated):
     print(f"User created: {msg.name} ({msg.email})")
@@ -221,13 +221,13 @@ fastsqs/
 
 1. **Message Parsing:** JSON message body is parsed and validated
 2. **Route Matching:** Message type is extracted and matched to registered routes
-3. **Model Validation:** Pydantic model validates and normalizes the message data
+3. **Model Validation:** SQSEvent model validates and normalizes the message data
 4. **Handler Execution:** Your handler function is called with the validated model
 5. **Error Handling:** Any errors result in batch item failures for SQS retry
 
 ### Key Concepts
 
-- **FastAPI-like Decorators:** Use `@app.route(Model)` to register handlers
+- **FastAPI-like Decorators:** Use `@app.route(SQSEventModel)` to register handlers
 - **Automatic Type Inference:** Handler signature determines what parameters to pass
 - **Field Normalization:** camelCase ↔ snake_case conversion happens automatically
 - **Flexible Matching:** Multiple field name variants are supported out of the box
@@ -258,32 +258,6 @@ All failures are added to `batchItemFailures` in the Lambda response, allowing S
 - **Partial Batch Failures:** Only failed messages are retried, not entire batches
 - **Type Safety:** Full type checking and validation with Pydantic
 - **Memory Efficient:** Minimal overhead per message with automatic cleanup
-
----
-
-## Migration from QueueRouter
-
-If you're upgrading from the old QueueRouter-based API:
-
-**Old Way (QueueRouter):**
-```python
-router = QueueRouter(key="type")
-
-@router.route("user_created", model=UserCreated)
-def handle_user(payload, record, context, ctx, data):
-    print(f"User: {data.name}")
-```
-
-**New Way (FastSQS):**
-```python
-app = FastSQS()
-
-@app.route(UserCreated)
-def handle_user(msg: UserCreated):
-    print(f"User: {msg.name}")
-```
-
-The new API is cleaner, more type-safe, and follows FastAPI conventions. QueueRouter is still available for complex nested routing scenarios.
 
 ---
 
