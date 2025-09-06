@@ -4,12 +4,10 @@ import re
 
 
 class SQSEvent(BaseModel):
-    """Base class for SQS event models with automatic message type routing"""
     
     @model_validator(mode='before')
     @classmethod
     def normalize_field_names(cls, data: Any) -> Any:
-        """Normalize field names to handle variants like userId -> user_id"""
         if not isinstance(data, dict):
             return data
             
@@ -39,13 +37,11 @@ class SQSEvent(BaseModel):
     
     @classmethod
     def get_message_type(cls) -> str:
-        """Get the message type identifier for routing"""
         name = cls.__name__
         return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
     
     @classmethod
     def get_message_type_variants(cls) -> Set[str]:
-        """Get all possible variants of the message type for flexible matching"""
         base_name = cls.__name__
         
         variants = set()
@@ -69,7 +65,6 @@ class SQSEvent(BaseModel):
     
     @classmethod
     def from_sqs_record(cls, record: Dict[str, Any]) -> "SQSEvent":
-        """Create an instance from an SQS record"""
         import json
         body = json.loads(record.get("body", "{}"))
         return cls.model_validate(body)

@@ -1,11 +1,20 @@
 # FastSQS
 
-**FastAPI-like, modern async SQS message processing for Python.**
+**FastAPI-like, production-ready async SQS message processing for Python.**
 
 [![PyPI version](https://img.shields.io/pypi/v/fastsqs.svg)](https://pypi.org/project/fastsqs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
+
+## Version 0.3.0 - Production Ready Features
+
+### 🚀 New Enterprise Features
+
+- **Idempotency**: Prevent duplicate message processing with memory or DynamoDB storage
+- **Advanced Error Handling**: Exponential backoff, circuit breaker, and DLQ management  
+- **Visibility Timeout Management**: Automatic monitoring and extension for long-running processes
+- **Parallelization**: Concurrent processing with semaphore-based limiting and thread pools
 
 ## Key Features
 

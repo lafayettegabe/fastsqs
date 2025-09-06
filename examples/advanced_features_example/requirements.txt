@@ -1,0 +1,2 @@
+fastsqs
+boto3  # Optional, for DynamoDB idempotency store

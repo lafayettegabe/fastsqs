@@ -34,17 +34,17 @@ def select_kwargs(fn: Handler, **candidates) -> Dict[str, Any]:
     return {k: v for k, v in candidates.items() if k in accepted}
 
 
-async def invoke_handler(fn: Handler, **kwargs) -> None:
+async def invoke_handler(fn: Handler, **kwargs) -> Any:
     kw = select_kwargs(fn, **kwargs)
     
     if inspect.iscoroutinefunction(fn):
-        await fn(**kw)
+        result = await fn(**kw)
     else:
         result = fn(**kw)
         if inspect.isawaitable(result):
-            await result
-        else:
-            pass
+            result = await result
+    
+    return result
 
 
 def shallow_mask(d: dict, fields: List[str], mask: str = "***") -> dict:

@@ -9,12 +9,13 @@ from .events import SQSEvent
 from .types import QueueType, Handler
 from .exceptions import RouteNotFound, InvalidMessage
 from .middleware import Middleware, run_middlewares
+from .middleware.idempotency import IdempotencyHit
 from .routing import QueueRouter
 from .utils import group_records_by_message_group, invoke_handler
+from .presets import MiddlewarePreset
 
 
 class FastSQS:
-    """Modern FastAPI-like interface for SQS message processing with FIFO/Standard queue support"""
     
     def __init__(
         self,
@@ -24,7 +25,9 @@ class FastSQS:
         debug: bool = False,
         queue_type: QueueType = QueueType.STANDARD,
         message_type_key: str = "type",
-        flexible_matching: bool = True
+        flexible_matching: bool = True,
+        max_concurrent_messages: int = 10,
+        enable_partial_batch_failure: bool = True
     ):
         self.title = title
         self.description = description
@@ -33,6 +36,8 @@ class FastSQS:
         self.queue_type = queue_type
         self.message_type_key = message_type_key
         self.flexible_matching = flexible_matching
+        self.max_concurrent_messages = max_concurrent_messages
+        self.enable_partial_batch_failure = enable_partial_batch_failure
         
         self._routes: Dict[str, tuple[Type[SQSEvent], Handler]] = {}
         self._route_lookup: Dict[str, str] = {}
@@ -47,7 +52,6 @@ class FastSQS:
         *,
         middlewares: Optional[List[Middleware]] = None
     ) -> Callable[[Handler], Handler]:
-        """Route a Pydantic model to a handler function"""
         primary_type = event_model.get_message_type()
         
         def decorator(handler: Handler) -> Handler:
@@ -69,14 +73,12 @@ class FastSQS:
         return decorator
 
     def default(self) -> Callable[[Handler], Handler]:
-        """Set a default handler for unmatched messages"""
         def decorator(handler: Handler) -> Handler:
             self._default_handler = handler
             return handler
         return decorator
 
     def _find_route(self, message_type: str) -> Optional[tuple[Type[SQSEvent], Handler]]:
-        """Find route with flexible matching"""
         if message_type in self._routes:
             return self._routes[message_type]
         
@@ -87,25 +89,33 @@ class FastSQS:
         return None
 
     def include_router(self, router: QueueRouter) -> None:
-        """Include a QueueRouter for complex nested routing scenarios"""
         self._routers.append(router)
 
     def add_middleware(self, middleware: Middleware) -> None:
-        """Add middleware to the app"""
         self._middlewares.append(middleware)
 
+    def use_preset(self, preset: str, **kwargs) -> None:
+        if preset == "production":
+            middlewares = MiddlewarePreset.production(**kwargs)
+        elif preset == "development":
+            middlewares = MiddlewarePreset.development(**kwargs)
+        elif preset == "minimal":
+            middlewares = MiddlewarePreset.minimal(**kwargs)
+        else:
+            raise ValueError(f"Unknown preset: {preset}. Available: production, development, minimal")
+        
+        for middleware in middlewares:
+            self.add_middleware(middleware)
+
     def set_queue_type(self, queue_type: QueueType) -> None:
-        """Set the queue type (STANDARD or FIFO)"""
         self.queue_type = queue_type
         if self.debug:
             print(f"[FastSQS] Queue type set to: {queue_type.value}")
 
     def is_fifo_queue(self) -> bool:
-        """Check if this is a FIFO queue"""
         return self.queue_type == QueueType.FIFO
 
-    async def _handle_record(self, record: dict, context: Any) -> None:
-        """Handle a single record with both new and legacy routing"""
+    async def _handle_record(self, record: dict, context: Any) -> Optional[Any]:
         body_str = record.get("body", "")
         msg_id = record.get("messageId") or record.get("message_id") or "UNKNOWN"
 
@@ -133,7 +143,17 @@ class FastSQS:
             }
 
         err: Optional[Exception] = None
-        await run_middlewares(self._middlewares, "before", payload, record, context, ctx)
+        result: Any = None
+        
+        try:
+            await run_middlewares(self._middlewares, "before", payload, record, context, ctx)
+        except IdempotencyHit as idempotency_hit:
+            if self.debug:
+                print(f"[FastSQS] Idempotency hit for message {msg_id}: {idempotency_hit.key}")
+            ctx["idempotency_result"] = idempotency_hit.result
+            ctx["idempotency_hit"] = True
+            await run_middlewares(self._middlewares, "after", payload, record, context, ctx, None)
+            return idempotency_hit.result
         
         try:
             handled = False
@@ -150,18 +170,21 @@ class FastSQS:
                         raise InvalidMessage(f"Validation failed for {message_type}: {e}")
 
                     ctx["message_type"] = message_type
-                    await invoke_handler(handler, msg=event_instance, record=record, context=context, ctx=ctx)
+                    result = await invoke_handler(handler, msg=event_instance, record=record, context=context, ctx=ctx)
+                    ctx["handler_result"] = result
                     handled = True
 
             if not handled and self._routers:
                 for router in self._routers:
                     if await router.dispatch(payload, record, context, ctx, root_payload=payload):
                         handled = True
+                        result = ctx.get("handler_result")
                         break
 
             if not handled:
                 if self._default_handler:
-                    await invoke_handler(self._default_handler, payload=payload, record=record, context=context, ctx=ctx)
+                    result = await invoke_handler(self._default_handler, payload=payload, record=record, context=context, ctx=ctx)
+                    ctx["handler_result"] = result
                 else:
                     available_routes = list(self._routes.keys())
                     available_routers = [r.key for r in self._routers]
@@ -176,9 +199,10 @@ class FastSQS:
             raise
         finally:
             await run_middlewares(self._middlewares, "after", payload, record, context, ctx, err)
+        
+        return result
 
     async def _handle_event(self, event: dict, context: Any) -> dict:
-        """Handle the full SQS event"""
         records = event.get("Records", [])
         if not records:
             return {"batchItemFailures": []}
@@ -193,10 +217,15 @@ class FastSQS:
             return await self._handle_standard_event(records, context)
     
     async def _handle_standard_event(self, records: List[dict], context: Any) -> dict:
-        """Handle standard queue events (parallel processing)"""
         failures: List[Dict[str, str]] = []
         
-        tasks = [asyncio.create_task(self._handle_record_safe(rec, context)) for rec in records]
+        semaphore = asyncio.Semaphore(self.max_concurrent_messages)
+        
+        async def process_with_semaphore(record):
+            async with semaphore:
+                return await self._handle_record_safe(record, context)
+        
+        tasks = [asyncio.create_task(process_with_semaphore(rec)) for rec in records]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         for i, result in enumerate(results):
@@ -204,12 +233,12 @@ class FastSQS:
                 msg_id = records[i].get("messageId", "UNKNOWN")
                 if self.debug:
                     print(f"[FastSQS] Record failed: messageId={msg_id}, error={result}")
-                failures.append({"itemIdentifier": msg_id})
+                if self.enable_partial_batch_failure:
+                    failures.append({"itemIdentifier": msg_id})
         
         return {"batchItemFailures": failures}
     
     async def _handle_fifo_event(self, records: List[dict], context: Any) -> dict:
-        """Handle FIFO queue events (sequential processing by message group)"""
         failures: List[Dict[str, str]] = []
         
         message_groups = group_records_by_message_group(records)
@@ -217,7 +246,8 @@ class FastSQS:
         if self.debug:
             print(f"[FastSQS] FIFO processing: {len(records)} records in {len(message_groups)} groups")
         
-        for group_id, group_records in message_groups.items():
+        async def process_group(group_id: str, group_records: List[dict]):
+            group_failures = []
             if self.debug:
                 print(f"[FastSQS] Processing group '{group_id}' with {len(group_records)} records")
             
@@ -228,14 +258,39 @@ class FastSQS:
                     msg_id = rec.get("messageId", "UNKNOWN")
                     if self.debug:
                         print(f"[FastSQS] FIFO record failed: messageId={msg_id}, group={group_id}, error={e}")
-                    failures.append({"itemIdentifier": msg_id})
+                    if self.enable_partial_batch_failure:
+                        group_failures.append({"itemIdentifier": msg_id})
+            
+            return group_failures
+        
+        group_tasks = [
+            asyncio.create_task(process_group(group_id, group_records))
+            for group_id, group_records in message_groups.items()
+        ]
+        
+        group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+        
+        for result in group_results:
+            if isinstance(result, list):
+                failures.extend(result)
+            elif isinstance(result, Exception):
+                if self.debug:
+                    print(f"[FastSQS] Message group processing failed: {result}")
         
         return {"batchItemFailures": failures}
     
     async def _handle_record_safe(self, record: dict, context: Any) -> None:
-        """Safely handle a record (used for async gather)"""
         await self._handle_record(record, context)
 
     def handler(self, event: dict, context: Any) -> dict:
-        """AWS Lambda handler entry point"""
-        return asyncio.run(self._handle_event(event, context))
+        try:
+            asyncio.get_running_loop()
+            raise RuntimeError("FastSQS handler called from within event loop. Use async_handler() for testing.")
+        except RuntimeError as e:
+            if "no running event loop" in str(e):
+                return asyncio.run(self._handle_event(event, context))
+            else:
+                raise
+    
+    async def async_handler(self, event: dict, context: Any) -> dict:
+        return await self._handle_event(event, context)
