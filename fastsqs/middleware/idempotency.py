@@ -86,7 +86,9 @@ class MemoryIdempotencyStore(IdempotencyStore):
 class DynamoDBIdempotencyStore(IdempotencyStore):
     
     def __init__(self, table_name: str, key_attr: str = "idempotency_key", 
-                 ttl_attr: str = "ttl", region_name: Optional[str] = None):
+                 ttl_attr: str = "ttl", region_name: Optional[str] = None,
+                 create_table: bool = True, read_capacity_units: int = 5, 
+                 write_capacity_units: int = 5):
         try:
             import aioboto3
             from botocore.exceptions import ClientError
@@ -98,18 +100,113 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
             self.region_name = region_name
             self.key_attr = key_attr
             self.ttl_attr = ttl_attr
+            self.create_table = create_table
+            self.read_capacity_units = read_capacity_units
+            self.write_capacity_units = write_capacity_units
             self._table = None
+            self._table_exists_checked = False
         except ImportError:
             raise ImportError("aioboto3 is required for DynamoDB idempotency store")
     
+    async def _ensure_table_exists(self):
+        if not self.create_table or self._table_exists_checked:
+            return
+        
+        try:
+            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+                try:
+                    table = await dynamodb.Table(self.table_name)
+                    await table.load()
+                    logger.info(f"DynamoDB table {self.table_name} already exists")
+                    
+                    await self._ensure_ttl_enabled(table)
+                    
+                except self.ClientError as e:
+                    if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                        await self._create_table(dynamodb)
+                    else:
+                        raise
+                
+                self._table_exists_checked = True
+                
+        except Exception as e:
+            logger.error(f"Failed to ensure table exists: {str(e)}")
+            raise
+    
+    async def _create_table(self, dynamodb):
+        try:
+            logger.info(f"Creating DynamoDB table {self.table_name}")
+            
+            table = await dynamodb.create_table(
+                TableName=self.table_name,
+                KeySchema=[
+                    {
+                        'AttributeName': self.key_attr,
+                        'KeyType': 'HASH'
+                    }
+                ],
+                AttributeDefinitions=[
+                    {
+                        'AttributeName': self.key_attr,
+                        'AttributeType': 'S'
+                    }
+                ],
+                BillingMode='PROVISIONED',
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': self.read_capacity_units,
+                    'WriteCapacityUnits': self.write_capacity_units
+                }
+            )
+            
+            await table.wait_until_exists()
+            logger.info(f"DynamoDB table {self.table_name} created successfully")
+            
+            await self._ensure_ttl_enabled(table)
+            
+        except self.ClientError as e:
+            if e.response['Error']['Code'] == 'ResourceInUseException':
+                logger.info(f"Table {self.table_name} already exists")
+            else:
+                logger.error(f"Failed to create table {self.table_name}: {str(e)}")
+                raise
+    
+    async def _ensure_ttl_enabled(self, table):
+        try:
+            async with self.session.client("dynamodb", region_name=self.region_name) as client:
+                try:
+                    response = await client.describe_time_to_live(TableName=self.table_name)
+                    ttl_status = response.get('TimeToLiveDescription', {}).get('TimeToLiveStatus')
+                    
+                    if ttl_status != 'ENABLED':
+                        logger.info(f"Enabling TTL on table {self.table_name}")
+                        await client.update_time_to_live(
+                            TableName=self.table_name,
+                            TimeToLiveSpecification={
+                                'AttributeName': self.ttl_attr,
+                                'Enabled': True
+                            }
+                        )
+                        logger.info(f"TTL enabled on table {self.table_name}")
+                    else:
+                        logger.debug(f"TTL already enabled on table {self.table_name}")
+                        
+                except self.ClientError as e:
+                    if e.response['Error']['Code'] != 'ValidationException':
+                        logger.warning(f"Failed to enable TTL on table {self.table_name}: {str(e)}")
+                        
+        except Exception as e:
+            logger.warning(f"Failed to configure TTL on table {self.table_name}: {str(e)}")
+    
     async def _get_table(self):
         if self._table is None:
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 self._table = await dynamodb.Table(self.table_name)
         return self._table
     
     async def get(self, key: str, consistent_read: bool = False) -> Optional[Dict[str, Any]]:
         try:
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 response = await table.get_item(
@@ -131,6 +228,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
             item[self.ttl_attr] = int(time.time() + ttl_seconds)
         
         try:
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.put_item(Item=item)
@@ -144,6 +242,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
         
         try:
             current_time = int(time.time())
+            await self._ensure_table_exists()
             
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
@@ -175,6 +274,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
             
             expression_attribute_names = {f"#{k}": k for k in updates.keys()}
             
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.update_item(
@@ -194,6 +294,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
     
     async def delete(self, key: str) -> None:
         try:
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.delete_item(Key={self.key_attr: key})
@@ -202,6 +303,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
     
     async def conditional_delete(self, key: str, condition_attr: str, condition_value: Any) -> bool:
         try:
+            await self._ensure_table_exists()
             async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.delete_item(
