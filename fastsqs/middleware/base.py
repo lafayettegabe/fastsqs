@@ -5,6 +5,15 @@ from typing import Any, Awaitable, List, Optional
 
 
 class Middleware:
+    def __init__(self):
+        self._app = None  # Will be set by FastSQS when middleware is added
+    
+    def _log(self, level: str, message: str, **data) -> None:
+        """Log method that routes through the app's logging system"""
+        if self._app and hasattr(self._app, '_log'):
+            self._app._log(level, message, **data)
+        # If no app or logging available, silently do nothing
+    
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
         return None
 

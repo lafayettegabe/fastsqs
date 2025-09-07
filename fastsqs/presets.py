@@ -21,7 +21,11 @@ class MiddlewarePreset:
     ) -> list:
         middlewares = []
         
-        middlewares.append(LoggingMiddleware())
+        middlewares.append(LoggingMiddleware(
+            verbose=True,
+            include_context=True,
+            include_record=False
+        ))
         middlewares.append(TimingMsMiddleware())
         
         if dynamodb_table:
@@ -70,7 +74,11 @@ class MiddlewarePreset:
     def development(max_concurrent: int = 5) -> list:
         middlewares = []
         
-        middlewares.append(LoggingMiddleware())
+        middlewares.append(LoggingMiddleware(
+            verbose=True,
+            include_context=True,
+            include_record=True
+        ))
         middlewares.append(TimingMsMiddleware())
         
         store = MemoryIdempotencyStore()

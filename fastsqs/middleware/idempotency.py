@@ -338,6 +338,7 @@ class IdempotencyMiddleware(Middleware):
         entity_lock_ttl_seconds: Optional[int] = None,
         sqs_visibility_timeout_seconds: int = 30
     ):
+        super().__init__()
         self.store = store or MemoryIdempotencyStore()
         self.key_generator = key_generator or self._default_key_generator
         self.ttl_seconds = ttl_seconds
@@ -404,15 +405,21 @@ class IdempotencyMiddleware(Middleware):
                 raise IdempotencyStoreError(f"Failed to release entity lock: {str(e)}")
     
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
+        
         try:
             idempotency_key = self.key_generator(payload, record)
             ctx["idempotency_key"] = idempotency_key
+            self._log("debug", f"Generated idempotency key", 
+                     msg_id=msg_id, idempotency_key=idempotency_key)
             
             entity_key = self._get_entity_key(payload) if self.per_entity_sequencing else None
             if entity_key:
                 ctx["entity_key"] = entity_key
+                self._log("debug", f"Entity key", msg_id=msg_id, entity_key=entity_key)
             
             if self.use_strong_consistency:
+                self._log("debug", f"Using strong consistency mode", msg_id=msg_id)
                 reservation_record = {
                     "status": "IN_PROGRESS",
                     "created_at": time.time(),
@@ -420,6 +427,7 @@ class IdempotencyMiddleware(Middleware):
                     "entity_key": entity_key
                 }
                 
+                self._log("debug", f"Attempting to create reservation", msg_id=msg_id)
                 success = await self.store.conditional_put(
                     idempotency_key, 
                     reservation_record, 
@@ -427,15 +435,22 @@ class IdempotencyMiddleware(Middleware):
                 )
                 
                 if not success:
+                    self._log("debug", f"Reservation failed, checking existing record", msg_id=msg_id)
                     existing_record = await self.store.get(idempotency_key, consistent_read=True)
                     if existing_record:
                         status = existing_record.get("status")
+                        self._log("debug", f"Found existing record", 
+                                 msg_id=msg_id, status=status)
+                        
                         if status == "IN_PROGRESS":
+                            self._log("info", f"Message is currently in progress", msg_id=msg_id)
                             raise IdempotencyInProgress(
                                 key=idempotency_key,
                                 created_at=existing_record.get("created_at")
                             )
                         elif status == "COMPLETED":
+                            self._log("info", f"Message already completed, returning cached result", 
+                                     msg_id=msg_id)
                             ctx["idempotency_hit"] = True
                             ctx["idempotency_result"] = existing_record.get("result")
                             ctx["idempotency_timestamp"] = existing_record.get("finished_at")
@@ -446,14 +461,22 @@ class IdempotencyMiddleware(Middleware):
                                 timestamp=existing_record.get("finished_at")
                             )
                         elif status == "FAILED":
+                            self._log("warning", f"Message failed previously", msg_id=msg_id)
                             raise IdempotencyFailedPreviously(
                                 key=idempotency_key,
                                 error=existing_record.get("error"),
                                 timestamp=existing_record.get("finished_at")
                             )
+                    else:
+                        self._log("warning", f"No existing record found despite conditional_put failure", 
+                                 msg_id=msg_id)
+                else:
+                    self._log("debug", f"Reservation created successfully", msg_id=msg_id)
                 
                 if entity_key:
+                    self._log("debug", f"Attempting to acquire entity lock", msg_id=msg_id)
                     if not await self._acquire_entity_lock(entity_key, idempotency_key):
+                        self._log("warning", f"Failed to acquire entity lock, cleaning up", msg_id=msg_id)
                         try:
                             await self.store.delete(idempotency_key)
                         except Exception:
@@ -463,13 +486,16 @@ class IdempotencyMiddleware(Middleware):
                             entity_key=entity_key,
                             idempotency_key=idempotency_key
                         )
+                    self._log("debug", f"Entity lock acquired", msg_id=msg_id)
                     ctx["entity_locked"] = True
                 
                 ctx["idempotency_hit"] = False
                 ctx["reservation_created"] = True
             else:
+                self._log("debug", f"Using eventual consistency mode", msg_id=msg_id)
                 existing_record = await self.store.get(idempotency_key)
                 if existing_record:
+                    self._log("info", f"Found existing record, returning cached result", msg_id=msg_id)
                     ctx["idempotency_hit"] = True
                     ctx["idempotency_result"] = existing_record.get("result")
                     ctx["idempotency_timestamp"] = existing_record.get("timestamp")
@@ -480,11 +506,14 @@ class IdempotencyMiddleware(Middleware):
                         timestamp=existing_record.get("timestamp")
                     )
                 else:
+                    self._log("debug", f"No existing record found, proceeding with processing", msg_id=msg_id)
                     ctx["idempotency_hit"] = False
         
         except (IdempotencyHit, IdempotencyInProgress, IdempotencyFailedPreviously, EntityLockAcquisitionFailed):
             raise
         except Exception as e:
+            self._log("error", f"Error during idempotency check", 
+                     msg_id=msg_id, error_type=type(e).__name__, error=str(e))
             if self.fail_on_store_errors or not self.skip_on_error:
                 raise IdempotencyStoreError(f"Idempotency check failed: {str(e)}")
             ctx["idempotency_error"] = str(e)
@@ -492,13 +521,18 @@ class IdempotencyMiddleware(Middleware):
     async def after(self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]) -> None:
         entity_key = ctx.get("entity_key")
         idempotency_key = ctx.get("idempotency_key")
+        msg_id = record.get("messageId", "UNKNOWN")
         
         try:
             if ctx.get("idempotency_hit") or not ctx.get("reservation_created"):
+                self._log("debug", f"Skipping after processing", 
+                         msg_id=msg_id, hit=ctx.get('idempotency_hit'), 
+                         reservation=ctx.get('reservation_created'))
                 return
             
             if self.use_strong_consistency and idempotency_key:
                 if error:
+                    self._log("debug", f"Updating record with failure status", msg_id=msg_id)
                     failure_record = {
                         "status": "FAILED",
                         "finished_at": time.time(),
@@ -507,6 +541,7 @@ class IdempotencyMiddleware(Middleware):
                     }
                     await self.store.update(idempotency_key, failure_record)
                 else:
+                    self._log("debug", f"Updating record with completion status", msg_id=msg_id)
                     completion_record = {
                         "status": "COMPLETED",
                         "finished_at": time.time(),
@@ -514,6 +549,7 @@ class IdempotencyMiddleware(Middleware):
                     }
                     await self.store.update(idempotency_key, completion_record)
             elif not error and idempotency_key:
+                self._log("debug", f"Storing idempotency record for successful processing", msg_id=msg_id)
                 idempotency_record = {
                     "timestamp": time.time(),
                     "message_id": record.get("messageId"),
@@ -524,14 +560,17 @@ class IdempotencyMiddleware(Middleware):
                 await self.store.put(idempotency_key, idempotency_record, self.ttl_seconds)
             
             if ctx.get("entity_locked") and entity_key and idempotency_key:
+                print(f"[IDEMPOTENCY] {msg_id} - Releasing entity lock")
                 await self._release_entity_lock(entity_key, idempotency_key)
         
         except Exception as e:
+            print(f"[IDEMPOTENCY] {msg_id} - Error during after processing: {type(e).__name__}: {e}")
             if ctx.get("entity_locked") and entity_key and idempotency_key:
                 try:
+                    print(f"[IDEMPOTENCY] {msg_id} - Attempting to release entity lock after error")
                     await self._release_entity_lock(entity_key, idempotency_key)
-                except Exception:
-                    pass
+                except Exception as lock_error:
+                    print(f"[IDEMPOTENCY] {msg_id} - Failed to release entity lock: {lock_error}")
             
             if self.fail_on_store_errors or not self.skip_on_error:
                 raise IdempotencyStoreError(f"Failed to update idempotency record: {str(e)}")

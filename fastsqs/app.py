@@ -10,6 +10,7 @@ from .types import QueueType, Handler
 from .exceptions import RouteNotFound, InvalidMessage
 from .middleware import Middleware, run_middlewares
 from .middleware.idempotency import IdempotencyHit
+from .middleware.logging import LoggingMiddleware
 from .routing import QueueRouter
 from .utils import group_records_by_message_group, invoke_handler
 from .presets import MiddlewarePreset
@@ -66,7 +67,7 @@ class FastSQS:
                     if variant not in self._route_lookup:
                         self._route_lookup[variant] = primary_type
                     elif self.debug:
-                        print(f"Warning: Message type variant '{variant}' conflicts with existing route")
+                        self._log("warning", f"Message type variant conflicts with existing route", variant=variant)
             
             return handler
         
@@ -92,7 +93,17 @@ class FastSQS:
         self._routers.append(router)
 
     def add_middleware(self, middleware: Middleware) -> None:
+        middleware._app = self
         self._middlewares.append(middleware)
+    
+    def use(self, middleware: Middleware) -> None:
+        self.add_middleware(middleware)
+
+    def _log(self, level: str, message: str, **data) -> None:
+        for middleware in self._middlewares:
+            if isinstance(middleware, LoggingMiddleware) and hasattr(middleware, 'log'):
+                middleware.log(level, message, **data)
+                return
 
     def use_preset(self, preset: str, **kwargs) -> None:
         if preset == "production":
@@ -110,7 +121,7 @@ class FastSQS:
     def set_queue_type(self, queue_type: QueueType) -> None:
         self.queue_type = queue_type
         if self.debug:
-            print(f"[FastSQS] Queue type set to: {queue_type.value}")
+            self._log("info", f"Queue type set to: {queue_type.value}")
 
     def is_fifo_queue(self) -> bool:
         return self.queue_type == QueueType.FIFO
@@ -119,11 +130,16 @@ class FastSQS:
         body_str = record.get("body", "")
         msg_id = record.get("messageId") or record.get("message_id") or "UNKNOWN"
 
+        self._log("info", f"Starting record processing", msg_id=msg_id)
+        self._log("debug", f"Raw body", msg_id=msg_id, body=body_str[:500] + ('...' if len(body_str) > 500 else ''))
+
         try:
             payload = json.loads(body_str) if body_str else {}
             if not isinstance(payload, dict):
                 raise InvalidMessage("Message body must be a JSON object")
+            self._log("debug", f"Parsed payload", msg_id=msg_id, payload=payload)
         except json.JSONDecodeError as e:
+            self._log("error", f"JSON decode error", msg_id=msg_id, error=str(e))
             raise InvalidMessage(f"Invalid JSON in message body: {e}")
 
         ctx: Dict[str, Any] = {
@@ -141,15 +157,19 @@ class FastSQS:
                 "messageDeduplicationId": attributes.get("messageDeduplicationId"),
                 "queueType": "fifo"
             }
+            self._log("debug", f"FIFO info", msg_id=msg_id, fifo_info=ctx["fifoInfo"])
 
         err: Optional[Exception] = None
         result: Any = None
         
         try:
+            self._log("debug", f"Running 'before' middleware chain", msg_id=msg_id)
             await run_middlewares(self._middlewares, "before", payload, record, context, ctx)
+            self._log("debug", f"'before' middleware chain completed", msg_id=msg_id)
         except IdempotencyHit as idempotency_hit:
+            self._log("info", f"Idempotency hit, returning cached result", msg_id=msg_id, key=idempotency_hit.key)
             if self.debug:
-                print(f"[FastSQS] Idempotency hit for message {msg_id}: {idempotency_hit.key}")
+                self._log("debug", f"Idempotency hit for message", msg_id=msg_id, key=idempotency_hit.key)
             ctx["idempotency_result"] = idempotency_hit.result
             ctx["idempotency_hit"] = True
             await run_middlewares(self._middlewares, "after", payload, record, context, ctx, None)
@@ -159,47 +179,66 @@ class FastSQS:
             handled = False
             
             message_type = payload.get(self.message_type_key)
+            self._log("debug", f"Message type", msg_id=msg_id, message_type=message_type)
+            
             if message_type:
                 route = self._find_route(message_type)
                 if route:
                     event_model, handler = route
+                    self._log("debug", f"Found route for {message_type}", msg_id=msg_id, handler=handler.__name__)
                     
                     try:
                         event_instance = event_model.model_validate(payload)
+                        self._log("debug", f"Payload validation successful", msg_id=msg_id)
                     except ValidationError as e:
+                        self._log("error", f"Validation failed", msg_id=msg_id, error=str(e))
                         raise InvalidMessage(f"Validation failed for {message_type}: {e}")
 
                     ctx["message_type"] = message_type
+                    self._log("debug", f"Invoking handler", msg_id=msg_id, handler=handler.__name__)
                     result = await invoke_handler(handler, msg=event_instance, record=record, context=context, ctx=ctx)
+                    self._log("debug", f"Handler completed successfully", msg_id=msg_id, result_type=type(result).__name__)
                     ctx["handler_result"] = result
                     handled = True
+                else:
+                    self._log("warning", f"No route found for message type", msg_id=msg_id, message_type=message_type)
 
             if not handled and self._routers:
-                for router in self._routers:
+                self._log("debug", f"Trying routers", msg_id=msg_id, router_count=len(self._routers))
+                for i, router in enumerate(self._routers):
+                    self._log("debug", f"Trying router {i}", msg_id=msg_id, router_key=router.key)
                     if await router.dispatch(payload, record, context, ctx, root_payload=payload):
+                        self._log("debug", f"Router {i} handled the message", msg_id=msg_id)
                         handled = True
                         result = ctx.get("handler_result")
                         break
+                    else:
+                        self._log("debug", f"Router {i} did not handle the message", msg_id=msg_id)
 
             if not handled:
                 if self._default_handler:
+                    self._log("debug", f"Using default handler", msg_id=msg_id)
                     result = await invoke_handler(self._default_handler, payload=payload, record=record, context=context, ctx=ctx)
                     ctx["handler_result"] = result
                 else:
                     available_routes = list(self._routes.keys())
                     available_routers = [r.key for r in self._routers]
-                    raise RouteNotFound(
-                        f"No handler found for message. "
-                        f"Available FastSQS routes: {available_routes}, "
-                        f"Available router keys: {available_routers}"
-                    )
+                    error_msg = (f"No handler found for message. "
+                               f"Available FastSQS routes: {available_routes}, "
+                               f"Available router keys: {available_routers}")
+                    self._log("error", error_msg, msg_id=msg_id, available_routes=available_routes, available_routers=available_routers)
+                    raise RouteNotFound(error_msg)
                     
         except Exception as e:
+            self._log("error", f"Handler error", msg_id=msg_id, error_type=type(e).__name__, error=str(e))
             err = e
             raise
         finally:
+            self._log("debug", f"Running 'after' middleware chain", msg_id=msg_id)
             await run_middlewares(self._middlewares, "after", payload, record, context, ctx, err)
+            self._log("debug", f"'after' middleware chain completed", msg_id=msg_id)
         
+        self._log("info", f"Record processing completed successfully", msg_id=msg_id)
         return result
 
     async def _handle_event(self, event: dict, context: Any) -> dict:
@@ -209,7 +248,7 @@ class FastSQS:
         
         if self.debug:
             queue_info = f"queue_type={self.queue_type.value}, records={len(records)}"
-            print(f"[FastSQS] Processing event: {queue_info}")
+            self._log("info", f"Processing event", queue_info=queue_info)
         
         if self.is_fifo_queue():
             return await self._handle_fifo_event(records, context)
@@ -218,6 +257,8 @@ class FastSQS:
     
     async def _handle_standard_event(self, records: List[dict], context: Any) -> dict:
         failures: List[Dict[str, str]] = []
+        
+        self._log("info", f"Processing records in standard queue mode", record_count=len(records))
         
         semaphore = asyncio.Semaphore(self.max_concurrent_messages)
         
@@ -231,11 +272,16 @@ class FastSQS:
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 msg_id = records[i].get("messageId", "UNKNOWN")
+                self._log("error", f"Record failed", msg_id=msg_id, error_type=type(result).__name__, error=str(result))
                 if self.debug:
-                    print(f"[FastSQS] Record failed: messageId={msg_id}, error={result}")
+                    self._log("debug", f"Record failed", msg_id=msg_id, error=str(result))
                 if self.enable_partial_batch_failure:
                     failures.append({"itemIdentifier": msg_id})
+            else:
+                msg_id = records[i].get("messageId", "UNKNOWN")
+                self._log("debug", f"Record succeeded", msg_id=msg_id)
         
+        self._log("info", f"Batch processing completed", succeeded=len(records) - len(failures), failed=len(failures))
         return {"batchItemFailures": failures}
     
     async def _handle_fifo_event(self, records: List[dict], context: Any) -> dict:
@@ -244,12 +290,12 @@ class FastSQS:
         message_groups = group_records_by_message_group(records)
         
         if self.debug:
-            print(f"[FastSQS] FIFO processing: {len(records)} records in {len(message_groups)} groups")
+            self._log("info", f"FIFO processing", record_count=len(records), group_count=len(message_groups))
         
         async def process_group(group_id: str, group_records: List[dict]):
             group_failures = []
             if self.debug:
-                print(f"[FastSQS] Processing group '{group_id}' with {len(group_records)} records")
+                self._log("debug", f"Processing group", group_id=group_id, record_count=len(group_records))
             
             for rec in group_records:
                 try:
@@ -257,7 +303,7 @@ class FastSQS:
                 except Exception as e:
                     msg_id = rec.get("messageId", "UNKNOWN")
                     if self.debug:
-                        print(f"[FastSQS] FIFO record failed: messageId={msg_id}, group={group_id}, error={e}")
+                        self._log("error", f"FIFO record failed", msg_id=msg_id, group_id=group_id, error=str(e))
                     if self.enable_partial_batch_failure:
                         group_failures.append({"itemIdentifier": msg_id})
             
@@ -275,12 +321,17 @@ class FastSQS:
                 failures.extend(result)
             elif isinstance(result, Exception):
                 if self.debug:
-                    print(f"[FastSQS] Message group processing failed: {result}")
+                    self._log("error", f"Message group processing failed", error=str(result))
         
         return {"batchItemFailures": failures}
     
     async def _handle_record_safe(self, record: dict, context: Any) -> None:
-        await self._handle_record(record, context)
+        msg_id = record.get("messageId", "UNKNOWN")
+        try:
+            await self._handle_record(record, context)
+        except Exception as e:
+            self._log("error", f"Record processing failed", msg_id=msg_id, error_type=type(e).__name__, error=str(e))
+            raise
 
     def handler(self, event: dict, context: Any) -> dict:
         try:

@@ -92,6 +92,7 @@ class ParallelizationMiddleware(Middleware):
         resource_pools: Optional[Dict[str, ResourcePool]] = None,
         concurrency_limiter: Optional[ConcurrencyLimiter] = None
     ):
+        super().__init__()
         self.config = config or ParallelizationConfig()
         self.resource_pools = resource_pools or {}
         self.concurrency_limiter = concurrency_limiter or ConcurrencyLimiter(
@@ -109,9 +110,17 @@ class ParallelizationMiddleware(Middleware):
         self.batch_timers: Dict[str, asyncio.Task] = {}
     
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
         start_time = time.time()
+        
+        self._log("debug", f"Acquiring concurrency slot", 
+                 msg_id=msg_id, current_stats=self.concurrency_limiter.stats)
+        
         await self.concurrency_limiter.acquire()
         wait_time = time.time() - start_time
+        
+        self._log("debug", f"Concurrency slot acquired", 
+                 msg_id=msg_id, wait_time=wait_time, new_stats=self.concurrency_limiter.stats)
         
         ctx["concurrency_wait_time"] = wait_time
         ctx["concurrency_stats"] = self.concurrency_limiter.stats
@@ -120,12 +129,19 @@ class ParallelizationMiddleware(Middleware):
         ctx["_parallelization_middleware"] = self
     
     async def after(self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
         acquired_resources = ctx.get("acquired_resources", {})
+        
+        self._log("debug", f"Cleaning up resources", 
+                 msg_id=msg_id, resources=list(acquired_resources.keys()))
+        
         for resource_name, resource in acquired_resources.items():
             if resource_name in self.resource_pools:
                 await self.resource_pools[resource_name].release(resource)
         
         self.concurrency_limiter.release()
+        self._log("debug", f"Concurrency slot released", 
+                 msg_id=msg_id, new_stats=self.concurrency_limiter.stats)
     
     async def acquire_resource(self, resource_name: str, ctx: dict) -> Any:
         if resource_name not in self.resource_pools:
@@ -205,6 +221,7 @@ class LoadBalancingMiddleware(Middleware):
         health_check_interval: float = 30.0,
         weights: Optional[Dict[str, float]] = None
     ):
+        super().__init__()
         self.strategy = strategy
         self.health_check_interval = health_check_interval
         self.weights = weights or {}

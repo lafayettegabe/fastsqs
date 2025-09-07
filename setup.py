@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastsqs",
-    version="0.3.3",
+    version="0.3.4",
     description="FastAPI-like, modern async SQS message processing for Python with advanced features",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -16,7 +16,20 @@ setup(
     extras_require={
         "dynamodb": ["boto3>=1.26.0", "aioboto3>=12.0.0"],
         "idempotency": ["boto3>=1.26.0", "aioboto3>=12.0.0"],
-        "all": ["boto3>=1.26.0", "aioboto3>=12.0.0"],
+        "telemetry": [
+            "opentelemetry-sdk>=1.32.1",
+            "opentelemetry-exporter-otlp>=1.32.1",
+            "opentelemetry-instrumentation>=0.53b1",
+            "elasticsearch>=8.11.1"
+        ],
+        "all": [
+            "boto3>=1.26.0",
+            "aioboto3>=12.0.0",
+            "opentelemetry-sdk>=1.32.1",
+            "opentelemetry-exporter-otlp>=1.32.1",
+            "opentelemetry-instrumentation>=0.53b1",
+            "elasticsearch>=8.11.1"
+        ],
     },
     python_requires=">=3.8",
     license="MIT",

@@ -101,6 +101,7 @@ class ErrorHandlingMiddleware(Middleware):
         dead_letter_handler: Optional[Callable[[dict, dict, Exception], None]] = None,
         error_classifier: Optional[Callable[[Exception], str]] = None
     ):
+        super().__init__()
         self.retry_config = retry_config or RetryConfig()
         self.circuit_breaker = circuit_breaker
         self.dead_letter_handler = dead_letter_handler
@@ -128,21 +129,45 @@ class ErrorHandlingMiddleware(Middleware):
         return "temporary"
     
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
-        if self.circuit_breaker and not self.circuit_breaker.should_allow_request():
-            raise CircuitBreakerOpenError("Circuit breaker is open, rejecting request")
+        msg_id = record.get("messageId", "UNKNOWN")
+        
+        # Enhanced logging for circuit breaker state
+        if self.circuit_breaker:
+            self._log("debug", f"Circuit breaker check", 
+                     msg_id=msg_id, state=self.circuit_breaker.state,
+                     failure_count=self.circuit_breaker.failure_count,
+                     last_failure_time=self.circuit_breaker.last_failure_time)
+            
+            if not self.circuit_breaker.should_allow_request():
+                self._log("warning", f"Circuit breaker OPEN, rejecting request", msg_id=msg_id)
+                raise CircuitBreakerOpenError("Circuit breaker is open, rejecting request")
+            else:
+                self._log("debug", f"Circuit breaker allows request", msg_id=msg_id)
         
         ctx["retry_attempt"] = 0
         ctx["error_history"] = []
+        
+        self._log("debug", f"Initialized error handling context", msg_id=msg_id)
     
     async def after(self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
+        
         if error is None:
+            self._log("info", f"Processing succeeded", msg_id=msg_id)
             if self.circuit_breaker:
                 self.circuit_breaker.record_success()
+                self._log("debug", f"Circuit breaker success recorded", msg_id=msg_id)
         else:
+            self._log("error", f"Processing failed with error", 
+                     msg_id=msg_id, error_type=type(error).__name__, error=str(error))
             await self._handle_error(payload, record, context, ctx, error)
     
     async def _handle_error(self, payload: dict, record: dict, context: Any, ctx: dict, error: Exception) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
         error_type = self.error_classifier(error)
+        
+        self._log("debug", f"Error classification", msg_id=msg_id, error_type=error_type)
+        
         ctx["error_history"].append({
             "attempt": ctx["retry_attempt"],
             "error": str(error),
@@ -150,18 +175,32 @@ class ErrorHandlingMiddleware(Middleware):
             "timestamp": time.time()
         })
         
+        self._log("debug", f"Error history updated", 
+                 msg_id=msg_id, total_attempts=len(ctx['error_history']))
+        
         if self.circuit_breaker:
             self.circuit_breaker.record_failure(error)
+            self._log("debug", f"Circuit breaker failure recorded", 
+                     msg_id=msg_id, new_failure_count=self.circuit_breaker.failure_count)
         
         if error_type == "temporary" and self.retry_config.should_retry(error, ctx["retry_attempt"]):
             ctx["should_retry"] = True
             ctx["retry_delay"] = self.retry_config.get_delay(ctx["retry_attempt"])
+            self._log("info", f"Will retry", msg_id=msg_id, delay=ctx['retry_delay'])
         else:
+            self._log("info", f"Will not retry", 
+                     msg_id=msg_id, error_type=error_type,
+                     max_retries=self.retry_config.max_retries, 
+                     current_attempt=ctx['retry_attempt'])
+            
             if self.dead_letter_handler:
                 try:
+                    self._log("info", f"Calling dead letter handler", msg_id=msg_id)
                     await self.dead_letter_handler(payload, record, error)
-                except Exception:
-                    pass
+                    self._log("info", f"Dead letter handler completed", msg_id=msg_id)
+                except Exception as dlq_error:
+                    self._log("error", f"Dead letter handler failed", 
+                             msg_id=msg_id, dlq_error=str(dlq_error))
             
             ctx["should_retry"] = False
 
@@ -174,6 +213,7 @@ class DeadLetterQueueMiddleware(Middleware):
         max_processing_time: Optional[float] = None,
         include_context: bool = True
     ):
+        super().__init__()
         self.dlq_handler = dlq_handler or self._default_dlq_handler
         self.max_processing_time = max_processing_time
         self.include_context = include_context
@@ -181,9 +221,12 @@ class DeadLetterQueueMiddleware(Middleware):
     async def _default_dlq_handler(self, payload: dict, record: dict, error: Exception, ctx: dict) -> None:
         import json
         
+        msg_id = record.get("messageId", "UNKNOWN")
+        self._log("info", f"Creating dead letter queue record", msg_id=msg_id)
+        
         dlq_record = {
             "timestamp": time.time(),
-            "message_id": record.get("messageId"),
+            "message_id": msg_id,
             "original_payload": payload,
             "error": str(error),
             "error_type": type(error).__name__,
@@ -197,22 +240,43 @@ class DeadLetterQueueMiddleware(Middleware):
                 "queue_type": ctx.get("queueType")
             }
         
-        print(f"[DLQ] Message sent to dead letter queue: {json.dumps(dlq_record, indent=2)}")
+        self._log("info", f"Message sent to dead letter queue", 
+                 msg_id=msg_id, dlq_record=dlq_record)
     
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
+        self._log("debug", f"Starting DLQ monitoring", msg_id=msg_id)
+        
         if self.max_processing_time:
             ctx["dlq_start_time"] = time.time()
-    
+            self._log("debug", f"Processing timeout set", 
+                     msg_id=msg_id, timeout=self.max_processing_time)
+
     async def after(self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]) -> None:
+        msg_id = record.get("messageId", "UNKNOWN")
+        
         if self.max_processing_time:
             processing_time = time.time() - ctx.get("dlq_start_time", 0)
+            self._log("debug", f"Processing time", 
+                     msg_id=msg_id, processing_time=processing_time)
+            
             if processing_time > self.max_processing_time:
+                self._log("error", f"Processing timeout exceeded!", 
+                         msg_id=msg_id, processing_time=processing_time, 
+                         max_time=self.max_processing_time)
                 timeout_error = ProcessingTimeoutError(f"Processing exceeded {self.max_processing_time}s")
                 await self.dlq_handler(payload, record, timeout_error, ctx)
                 return
         
         if error and not ctx.get("should_retry", False):
+            self._log("info", f"Sending to DLQ due to error", 
+                     msg_id=msg_id, error_type=type(error).__name__)
             await self.dlq_handler(payload, record, error, ctx)
+        elif error:
+            self._log("info", f"Error occurred but will retry", 
+                     msg_id=msg_id, error_type=type(error).__name__)
+        else:
+            self._log("debug", f"Processing completed successfully", msg_id=msg_id)
 
 
 class CircuitBreakerOpenError(Exception):
