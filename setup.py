@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastsqs",
-    version="0.3.0",
+    version="0.3.1",
     description="FastAPI-like, modern async SQS message processing for Python with advanced features",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -14,8 +14,8 @@ setup(
         "pydantic>=2.0.0"
     ],
     extras_require={
-        "dynamodb": ["boto3>=1.26.0"],
-        "all": ["boto3>=1.26.0"],
+        "dynamodb": ["boto3>=1.26.0", "aioboto3>=12.0.0"],
+        "all": ["boto3>=1.26.0", "aioboto3>=12.0.0"],
     },
     python_requires=">=3.8",
     license="MIT",
