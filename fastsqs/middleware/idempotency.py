@@ -381,7 +381,7 @@ class IdempotencyMiddleware(Middleware):
         lock_record = {
             "status": "LOCKED",
             "locked_by": idempotency_key,
-            "created_at": time.time()
+            "created_at": int(time.time())
         }
         
         try:
@@ -422,7 +422,7 @@ class IdempotencyMiddleware(Middleware):
                 self._log("debug", f"Using strong consistency mode", msg_id=msg_id)
                 reservation_record = {
                     "status": "IN_PROGRESS",
-                    "created_at": time.time(),
+                    "created_at": int(time.time()),
                     "message_id": record.get("messageId"),
                     "entity_key": entity_key
                 }
@@ -535,7 +535,7 @@ class IdempotencyMiddleware(Middleware):
                     self._log("debug", f"Updating record with failure status", msg_id=msg_id)
                     failure_record = {
                         "status": "FAILED",
-                        "finished_at": time.time(),
+                        "finished_at": int(time.time()),
                         "error": str(error),
                         "error_type": type(error).__name__
                     }
@@ -544,14 +544,14 @@ class IdempotencyMiddleware(Middleware):
                     self._log("debug", f"Updating record with completion status", msg_id=msg_id)
                     completion_record = {
                         "status": "COMPLETED",
-                        "finished_at": time.time(),
+                        "finished_at": int(time.time()),
                         "result": ctx.get("handler_result")
                     }
                     await self.store.update(idempotency_key, completion_record)
             elif not error and idempotency_key:
                 self._log("debug", f"Storing idempotency record for successful processing", msg_id=msg_id)
                 idempotency_record = {
-                    "timestamp": time.time(),
+                    "timestamp": int(time.time()),
                     "message_id": record.get("messageId"),
                     "result": ctx.get("handler_result"),
                     "status": "completed"

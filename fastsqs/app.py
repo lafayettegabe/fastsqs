@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 from pydantic import BaseModel, ValidationError
 
@@ -135,7 +134,7 @@ class FastSQS:
         self._log("debug", f"Raw body", msg_id=msg_id, body=body_str[:500] + ('...' if len(body_str) > 500 else ''))
 
         try:
-            payload = json.loads(body_str, parse_float=Decimal) if body_str else {}
+            payload = json.loads(body_str) if body_str else {}
             if not isinstance(payload, dict):
                 raise InvalidMessage("Message body must be a JSON object")
             self._log("debug", f"Parsed payload", msg_id=msg_id, payload=payload)

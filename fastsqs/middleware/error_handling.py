@@ -225,7 +225,7 @@ class DeadLetterQueueMiddleware(Middleware):
         self._log("info", f"Creating dead letter queue record", msg_id=msg_id)
         
         dlq_record = {
-            "timestamp": time.time(),
+            "timestamp": int(time.time()),
             "message_id": msg_id,
             "original_payload": payload,
             "error": str(error),

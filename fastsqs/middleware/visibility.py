@@ -222,7 +222,7 @@ class QueueMetricsMiddleware(Middleware):
             success_rate = (self._metrics["messages_processed"] - self._metrics["messages_failed"]) / self._metrics["messages_processed"]
             
             aggregated_metrics = {
-                "timestamp": time.time(),
+                "timestamp": int(time.time()),
                 "window_duration": self.metrics_aggregation_window,
                 "messages_processed": self._metrics["messages_processed"],
                 "messages_failed": self._metrics["messages_failed"],
