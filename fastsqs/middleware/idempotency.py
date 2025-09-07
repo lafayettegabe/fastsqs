@@ -11,88 +11,114 @@ logger = logging.getLogger(__name__)
 
 
 class IdempotencyStore:
-    
-    async def get(self, key: str, consistent_read: bool = False) -> Optional[Dict[str, Any]]:
+
+    async def get(
+        self, key: str, consistent_read: bool = False
+    ) -> Optional[Dict[str, Any]]:
         raise NotImplementedError
-    
-    async def put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
+
+    async def put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> None:
         raise NotImplementedError
-    
-    async def conditional_put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> bool:
+
+    async def conditional_put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> bool:
         raise NotImplementedError
-    
+
     async def update(self, key: str, updates: Dict[str, Any]) -> bool:
         raise NotImplementedError
-    
+
     async def delete(self, key: str) -> None:
         raise NotImplementedError
-    
-    async def conditional_delete(self, key: str, condition_attr: str, condition_value: Any) -> bool:
+
+    async def conditional_delete(
+        self, key: str, condition_attr: str, condition_value: Any
+    ) -> bool:
         raise NotImplementedError
 
 
 class MemoryIdempotencyStore(IdempotencyStore):
-    
+
     def __init__(self):
         self._store: Dict[str, Dict[str, Any]] = {}
-    
-    async def get(self, key: str, consistent_read: bool = False) -> Optional[Dict[str, Any]]:
+
+    async def get(
+        self, key: str, consistent_read: bool = False
+    ) -> Optional[Dict[str, Any]]:
         record = self._store.get(key)
         if record and record.get("expires_at", float("inf")) > time.time():
             return record
         elif record:
             del self._store[key]
         return None
-    
-    async def put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
+
+    async def put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> None:
         if ttl_seconds:
             value["expires_at"] = time.time() + ttl_seconds
         self._store[key] = value
-    
-    async def conditional_put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> bool:
+
+    async def conditional_put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> bool:
         if key in self._store:
             record = self._store[key]
             if record.get("expires_at", float("inf")) > time.time():
                 return False
             else:
                 del self._store[key]
-        
+
         await self.put(key, value, ttl_seconds)
         return True
-    
+
     async def update(self, key: str, updates: Dict[str, Any]) -> bool:
         if key not in self._store:
             return False
-        
+
         record = self._store[key]
         if record.get("expires_at", float("inf")) <= time.time():
             del self._store[key]
             return False
-        
+
         record.update(updates)
         return True
-    
+
     async def delete(self, key: str) -> None:
         if key in self._store:
             del self._store[key]
-    
-    async def conditional_delete(self, key: str, condition_attr: str, condition_value: Any) -> bool:
-        if key in self._store and self._store[key].get(condition_attr) == condition_value:
+
+    async def conditional_delete(
+        self, key: str, condition_attr: str, condition_value: Any
+    ) -> bool:
+        if (
+            key in self._store
+            and self._store[key].get(condition_attr) == condition_value
+        ):
             del self._store[key]
             return True
         return False
 
 
 class DynamoDBIdempotencyStore(IdempotencyStore):
-    
-    def __init__(self, table_name: str, key_attr: str = "idempotency_key", 
-                 ttl_attr: str = "ttl", region_name: Optional[str] = None,
-                 create_table: bool = True, read_capacity_units: int = 5, 
-                 write_capacity_units: int = 5):
+
+    def __init__(
+        self,
+        table_name: str,
+        key_attr: str = "idempotency_key",
+        ttl_attr: str = "ttl",
+        region_name: Optional[str] = None,
+        create_table: bool = True,
+        read_capacity_units: int = 5,
+        write_capacity_units: int = 5,
+    ):
         try:
             import aioboto3
             from botocore.exceptions import ClientError
             from boto3.dynamodb.conditions import Attr
+
             self.ClientError = ClientError
             self.Attr = Attr
             self.session = aioboto3.Session()
@@ -107,111 +133,120 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
             self._table_exists_checked = False
         except ImportError:
             raise ImportError("aioboto3 is required for DynamoDB idempotency store")
-    
+
     async def _ensure_table_exists(self):
         if not self.create_table or self._table_exists_checked:
             return
-        
+
         try:
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 try:
                     table = await dynamodb.Table(self.table_name)
                     await table.load()
                     logger.info(f"DynamoDB table {self.table_name} already exists")
-                    
+
                     await self._ensure_ttl_enabled(table)
-                    
+
                 except self.ClientError as e:
-                    if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                    if e.response["Error"]["Code"] == "ResourceNotFoundException":
                         await self._create_table(dynamodb)
                     else:
                         raise
-                
+
                 self._table_exists_checked = True
-                
+
         except Exception as e:
             logger.error(f"Failed to ensure table exists: {str(e)}")
             raise
-    
+
     async def _create_table(self, dynamodb):
         try:
             logger.info(f"Creating DynamoDB table {self.table_name}")
-            
+
             table = await dynamodb.create_table(
                 TableName=self.table_name,
-                KeySchema=[
-                    {
-                        'AttributeName': self.key_attr,
-                        'KeyType': 'HASH'
-                    }
-                ],
+                KeySchema=[{"AttributeName": self.key_attr, "KeyType": "HASH"}],
                 AttributeDefinitions=[
-                    {
-                        'AttributeName': self.key_attr,
-                        'AttributeType': 'S'
-                    }
+                    {"AttributeName": self.key_attr, "AttributeType": "S"}
                 ],
-                BillingMode='PROVISIONED',
+                BillingMode="PROVISIONED",
                 ProvisionedThroughput={
-                    'ReadCapacityUnits': self.read_capacity_units,
-                    'WriteCapacityUnits': self.write_capacity_units
-                }
+                    "ReadCapacityUnits": self.read_capacity_units,
+                    "WriteCapacityUnits": self.write_capacity_units,
+                },
             )
-            
+
             await table.wait_until_exists()
             logger.info(f"DynamoDB table {self.table_name} created successfully")
-            
+
             await self._ensure_ttl_enabled(table)
-            
+
         except self.ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceInUseException':
+            if e.response["Error"]["Code"] == "ResourceInUseException":
                 logger.info(f"Table {self.table_name} already exists")
             else:
                 logger.error(f"Failed to create table {self.table_name}: {str(e)}")
                 raise
-    
+
     async def _ensure_ttl_enabled(self, table):
         try:
-            async with self.session.client("dynamodb", region_name=self.region_name) as client:
+            async with self.session.client(
+                "dynamodb", region_name=self.region_name
+            ) as client:
                 try:
-                    response = await client.describe_time_to_live(TableName=self.table_name)
-                    ttl_status = response.get('TimeToLiveDescription', {}).get('TimeToLiveStatus')
-                    
-                    if ttl_status != 'ENABLED':
+                    response = await client.describe_time_to_live(
+                        TableName=self.table_name
+                    )
+                    ttl_status = response.get("TimeToLiveDescription", {}).get(
+                        "TimeToLiveStatus"
+                    )
+
+                    if ttl_status != "ENABLED":
                         logger.info(f"Enabling TTL on table {self.table_name}")
                         await client.update_time_to_live(
                             TableName=self.table_name,
                             TimeToLiveSpecification={
-                                'AttributeName': self.ttl_attr,
-                                'Enabled': True
-                            }
+                                "AttributeName": self.ttl_attr,
+                                "Enabled": True,
+                            },
                         )
                         logger.info(f"TTL enabled on table {self.table_name}")
                     else:
                         logger.debug(f"TTL already enabled on table {self.table_name}")
-                        
+
                 except self.ClientError as e:
-                    if e.response['Error']['Code'] != 'ValidationException':
-                        logger.warning(f"Failed to enable TTL on table {self.table_name}: {str(e)}")
-                        
+                    if e.response["Error"]["Code"] != "ValidationException":
+                        logger.warning(
+                            f"Failed to enable TTL on table {self.table_name}: {str(e)}"
+                        )
+
         except Exception as e:
-            logger.warning(f"Failed to configure TTL on table {self.table_name}: {str(e)}")
-    
+            logger.warning(
+                f"Failed to configure TTL on table {self.table_name}: {str(e)}"
+            )
+
     async def _get_table(self):
         if self._table is None:
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 self._table = await dynamodb.Table(self.table_name)
         return self._table
-    
-    async def get(self, key: str, consistent_read: bool = False) -> Optional[Dict[str, Any]]:
+
+    async def get(
+        self, key: str, consistent_read: bool = False
+    ) -> Optional[Dict[str, Any]]:
         try:
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 response = await table.get_item(
-                    Key={self.key_attr: key},
-                    ConsistentRead=consistent_read
+                    Key={self.key_attr: key}, ConsistentRead=consistent_read
                 )
                 item = response.get("Item")
                 if item:
@@ -221,98 +256,113 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
         except Exception:
             pass
         return None
-    
-    async def put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> None:
+
+    async def put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> None:
         item = {self.key_attr: key, **value}
         if ttl_seconds:
             item[self.ttl_attr] = int(time.time() + ttl_seconds)
-        
+
         try:
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.put_item(Item=item)
         except Exception:
             pass
-    
-    async def conditional_put(self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None) -> bool:
+
+    async def conditional_put(
+        self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
+    ) -> bool:
         item = {self.key_attr: key, **value}
         if ttl_seconds:
             item[self.ttl_attr] = int(time.time() + ttl_seconds)
-        
+
         try:
             current_time = int(time.time())
             await self._ensure_table_exists()
-            
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.put_item(
                     Item=item,
                     ConditionExpression=f"attribute_not_exists(#{self.key_attr}) OR #{self.ttl_attr} <= :now",
                     ExpressionAttributeNames={
                         f"#{self.key_attr}": self.key_attr,
-                        f"#{self.ttl_attr}": self.ttl_attr
+                        f"#{self.ttl_attr}": self.ttl_attr,
                     },
-                    ExpressionAttributeValues={
-                        ":now": current_time
-                    }
+                    ExpressionAttributeValues={":now": current_time},
                 )
             return True
         except self.ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return False
             raise
-    
+
     async def update(self, key: str, updates: Dict[str, Any]) -> bool:
         try:
             update_expression_parts = []
             expression_attribute_values = {}
-            
+
             for k, v in updates.items():
                 update_expression_parts.append(f"#{k} = :{k}")
                 expression_attribute_values[f":{k}"] = v
-            
+
             expression_attribute_names = {f"#{k}": k for k in updates.keys()}
-            
+            expression_attribute_names[f"#{self.key_attr}"] = self.key_attr
+
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.update_item(
                     Key={self.key_attr: key},
                     UpdateExpression="SET " + ", ".join(update_expression_parts),
                     ExpressionAttributeNames=expression_attribute_names,
                     ExpressionAttributeValues=expression_attribute_values,
-                    ConditionExpression=f"attribute_exists(#{self.key_attr})"
+                    ConditionExpression=f"attribute_exists(#{self.key_attr})",
                 )
             return True
         except self.ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return False
             raise
         except Exception:
             return False
-    
+
     async def delete(self, key: str) -> None:
         try:
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.delete_item(Key={self.key_attr: key})
         except Exception:
             pass
-    
-    async def conditional_delete(self, key: str, condition_attr: str, condition_value: Any) -> bool:
+
+    async def conditional_delete(
+        self, key: str, condition_attr: str, condition_value: Any
+    ) -> bool:
         try:
             await self._ensure_table_exists()
-            async with self.session.resource("dynamodb", region_name=self.region_name) as dynamodb:
+            async with self.session.resource(
+                "dynamodb", region_name=self.region_name
+            ) as dynamodb:
                 table = await dynamodb.Table(self.table_name)
                 await table.delete_item(
                     Key={self.key_attr: key},
-                    ConditionExpression=self.Attr(condition_attr).eq(condition_value)
+                    ConditionExpression=self.Attr(condition_attr).eq(condition_value),
                 )
             return True
         except self.ClientError as e:
-            if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return False
             logger.warning(f"Error in conditional delete for {key}: {e}")
             return False
@@ -322,7 +372,7 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
 
 
 class IdempotencyMiddleware(Middleware):
-    
+
     def __init__(
         self,
         store: Optional[IdempotencyStore] = None,
@@ -336,7 +386,7 @@ class IdempotencyMiddleware(Middleware):
         entity_key_extractor: Optional[Callable[[dict], str]] = None,
         fail_on_store_errors: bool = True,
         entity_lock_ttl_seconds: Optional[int] = None,
-        sqs_visibility_timeout_seconds: int = 30
+        sqs_visibility_timeout_seconds: int = 30,
     ):
         super().__init__()
         self.store = store or MemoryIdempotencyStore()
@@ -349,236 +399,332 @@ class IdempotencyMiddleware(Middleware):
         self.per_entity_sequencing = per_entity_sequencing
         self.entity_key_extractor = entity_key_extractor
         self.fail_on_store_errors = fail_on_store_errors
-        
-        self.entity_lock_ttl_seconds = entity_lock_ttl_seconds or (sqs_visibility_timeout_seconds + 60)
+
+        self.entity_lock_ttl_seconds = entity_lock_ttl_seconds or (
+            sqs_visibility_timeout_seconds + 60
+        )
         self.sqs_visibility_timeout_seconds = sqs_visibility_timeout_seconds
-    
+
     def _default_key_generator(self, payload: dict, record: dict) -> str:
         if self.use_message_deduplication_id:
             attributes = record.get("attributes", {})
             dedup_id = attributes.get("messageDeduplicationId")
             if dedup_id:
                 return f"dedup:{dedup_id}"
-        
+
         return self._hash_payload(payload)
-    
+
     def _hash_payload(self, payload: dict) -> str:
         if self.payload_hash_fields:
-            hash_data = {k: payload.get(k) for k in self.payload_hash_fields if k in payload}
+            hash_data = {
+                k: payload.get(k) for k in self.payload_hash_fields if k in payload
+            }
         else:
             hash_data = payload
-        
+
         payload_str = json.dumps(hash_data, sort_keys=True, separators=(",", ":"))
         return f"hash:{hashlib.sha256(payload_str.encode()).hexdigest()}"
-    
+
     def _get_entity_key(self, payload: dict) -> Optional[str]:
         if not self.per_entity_sequencing or not self.entity_key_extractor:
             return None
         return self.entity_key_extractor(payload)
-    
+
     async def _acquire_entity_lock(self, entity_key: str, idempotency_key: str) -> bool:
         lock_key = f"lock:{entity_key}"
         lock_record = {
             "status": "LOCKED",
             "locked_by": idempotency_key,
-            "created_at": int(time.time())
+            "created_at": int(time.time()),
         }
-        
+
         try:
-            return await self.store.conditional_put(lock_key, lock_record, self.entity_lock_ttl_seconds)
+            return await self.store.conditional_put(
+                lock_key, lock_record, self.entity_lock_ttl_seconds
+            )
         except Exception as e:
             if self.fail_on_store_errors:
                 raise IdempotencyStoreError(f"Failed to acquire entity lock: {str(e)}")
             return False
-    
+
     async def _release_entity_lock(self, entity_key: str, idempotency_key: str) -> None:
         lock_key = f"lock:{entity_key}"
         try:
-            if hasattr(self.store, 'conditional_delete'):
-                success = await self.store.conditional_delete(lock_key, "locked_by", idempotency_key)
+            if hasattr(self.store, "conditional_delete"):
+                success = await self.store.conditional_delete(
+                    lock_key, "locked_by", idempotency_key
+                )
                 if not success:
-                    logger.warning(f"Failed to release lock {lock_key}: not owned by {idempotency_key}")
+                    logger.warning(
+                        f"Failed to release lock {lock_key}: not owned by {idempotency_key}"
+                    )
             else:
                 await self.store.delete(lock_key)
         except Exception as e:
             if self.fail_on_store_errors:
                 raise IdempotencyStoreError(f"Failed to release entity lock: {str(e)}")
-    
-    async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
+
+    async def before(
+        self, payload: dict, record: dict, context: Any, ctx: dict
+    ) -> None:
         msg_id = record.get("messageId", "UNKNOWN")
-        
+
         try:
             idempotency_key = self.key_generator(payload, record)
             ctx["idempotency_key"] = idempotency_key
-            self._log("debug", f"Generated idempotency key", 
-                     msg_id=msg_id, idempotency_key=idempotency_key)
-            
-            entity_key = self._get_entity_key(payload) if self.per_entity_sequencing else None
+            self._log(
+                "debug",
+                f"Generated idempotency key",
+                msg_id=msg_id,
+                idempotency_key=idempotency_key,
+            )
+
+            entity_key = (
+                self._get_entity_key(payload) if self.per_entity_sequencing else None
+            )
             if entity_key:
                 ctx["entity_key"] = entity_key
                 self._log("debug", f"Entity key", msg_id=msg_id, entity_key=entity_key)
-            
+
             if self.use_strong_consistency:
                 self._log("debug", f"Using strong consistency mode", msg_id=msg_id)
                 reservation_record = {
                     "status": "IN_PROGRESS",
                     "created_at": int(time.time()),
                     "message_id": record.get("messageId"),
-                    "entity_key": entity_key
+                    "entity_key": entity_key,
                 }
-                
+
                 self._log("debug", f"Attempting to create reservation", msg_id=msg_id)
                 success = await self.store.conditional_put(
-                    idempotency_key, 
-                    reservation_record, 
-                    self.ttl_seconds
+                    idempotency_key, reservation_record, self.ttl_seconds
                 )
-                
+
                 if not success:
-                    self._log("debug", f"Reservation failed, checking existing record", msg_id=msg_id)
-                    existing_record = await self.store.get(idempotency_key, consistent_read=True)
+                    self._log(
+                        "debug",
+                        f"Reservation failed, checking existing record",
+                        msg_id=msg_id,
+                    )
+                    existing_record = await self.store.get(
+                        idempotency_key, consistent_read=True
+                    )
                     if existing_record:
                         status = existing_record.get("status")
-                        self._log("debug", f"Found existing record", 
-                                 msg_id=msg_id, status=status)
-                        
+                        self._log(
+                            "debug",
+                            f"Found existing record",
+                            msg_id=msg_id,
+                            status=status,
+                        )
+
                         if status == "IN_PROGRESS":
-                            self._log("info", f"Message is currently in progress", msg_id=msg_id)
+                            self._log(
+                                "info",
+                                f"Message is currently in progress",
+                                msg_id=msg_id,
+                            )
                             raise IdempotencyInProgress(
                                 key=idempotency_key,
-                                created_at=existing_record.get("created_at")
+                                created_at=existing_record.get("created_at"),
                             )
                         elif status == "COMPLETED":
-                            self._log("info", f"Message already completed, returning cached result", 
-                                     msg_id=msg_id)
+                            self._log(
+                                "info",
+                                f"Message already completed, returning cached result",
+                                msg_id=msg_id,
+                            )
                             ctx["idempotency_hit"] = True
                             ctx["idempotency_result"] = existing_record.get("result")
-                            ctx["idempotency_timestamp"] = existing_record.get("finished_at")
-                            
+                            ctx["idempotency_timestamp"] = existing_record.get(
+                                "finished_at"
+                            )
+
                             raise IdempotencyHit(
                                 key=idempotency_key,
                                 result=existing_record.get("result"),
-                                timestamp=existing_record.get("finished_at")
+                                timestamp=existing_record.get("finished_at"),
                             )
                         elif status == "FAILED":
-                            self._log("warning", f"Message failed previously", msg_id=msg_id)
+                            self._log(
+                                "warning", f"Message failed previously", msg_id=msg_id
+                            )
                             raise IdempotencyFailedPreviously(
                                 key=idempotency_key,
                                 error=existing_record.get("error"),
-                                timestamp=existing_record.get("finished_at")
+                                timestamp=existing_record.get("finished_at"),
                             )
                     else:
-                        self._log("warning", f"No existing record found despite conditional_put failure", 
-                                 msg_id=msg_id)
+                        self._log(
+                            "warning",
+                            f"No existing record found despite conditional_put failure",
+                            msg_id=msg_id,
+                        )
                 else:
-                    self._log("debug", f"Reservation created successfully", msg_id=msg_id)
-                
+                    self._log(
+                        "debug", f"Reservation created successfully", msg_id=msg_id
+                    )
+
                 if entity_key:
-                    self._log("debug", f"Attempting to acquire entity lock", msg_id=msg_id)
+                    self._log(
+                        "debug", f"Attempting to acquire entity lock", msg_id=msg_id
+                    )
                     if not await self._acquire_entity_lock(entity_key, idempotency_key):
-                        self._log("warning", f"Failed to acquire entity lock, cleaning up", msg_id=msg_id)
+                        self._log(
+                            "warning",
+                            f"Failed to acquire entity lock, cleaning up",
+                            msg_id=msg_id,
+                        )
                         try:
                             await self.store.delete(idempotency_key)
                         except Exception:
                             pass
-                        
+
                         raise EntityLockAcquisitionFailed(
-                            entity_key=entity_key,
-                            idempotency_key=idempotency_key
+                            entity_key=entity_key, idempotency_key=idempotency_key
                         )
                     self._log("debug", f"Entity lock acquired", msg_id=msg_id)
                     ctx["entity_locked"] = True
-                
+
                 ctx["idempotency_hit"] = False
                 ctx["reservation_created"] = True
             else:
                 self._log("debug", f"Using eventual consistency mode", msg_id=msg_id)
                 existing_record = await self.store.get(idempotency_key)
                 if existing_record:
-                    self._log("info", f"Found existing record, returning cached result", msg_id=msg_id)
+                    self._log(
+                        "info",
+                        f"Found existing record, returning cached result",
+                        msg_id=msg_id,
+                    )
                     ctx["idempotency_hit"] = True
                     ctx["idempotency_result"] = existing_record.get("result")
                     ctx["idempotency_timestamp"] = existing_record.get("timestamp")
-                    
+
                     raise IdempotencyHit(
                         key=idempotency_key,
                         result=existing_record.get("result"),
-                        timestamp=existing_record.get("timestamp")
+                        timestamp=existing_record.get("timestamp"),
                     )
                 else:
-                    self._log("debug", f"No existing record found, proceeding with processing", msg_id=msg_id)
+                    self._log(
+                        "debug",
+                        f"No existing record found, proceeding with processing",
+                        msg_id=msg_id,
+                    )
                     ctx["idempotency_hit"] = False
-        
-        except (IdempotencyHit, IdempotencyInProgress, IdempotencyFailedPreviously, EntityLockAcquisitionFailed):
+
+        except (
+            IdempotencyHit,
+            IdempotencyInProgress,
+            IdempotencyFailedPreviously,
+            EntityLockAcquisitionFailed,
+        ):
             raise
         except Exception as e:
-            self._log("error", f"Error during idempotency check", 
-                     msg_id=msg_id, error_type=type(e).__name__, error=str(e))
+            self._log(
+                "error",
+                f"Error during idempotency check",
+                msg_id=msg_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
             if self.fail_on_store_errors or not self.skip_on_error:
                 raise IdempotencyStoreError(f"Idempotency check failed: {str(e)}")
             ctx["idempotency_error"] = str(e)
-    
-    async def after(self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]) -> None:
+
+    async def after(
+        self,
+        payload: dict,
+        record: dict,
+        context: Any,
+        ctx: dict,
+        error: Optional[Exception],
+    ) -> None:
         entity_key = ctx.get("entity_key")
         idempotency_key = ctx.get("idempotency_key")
         msg_id = record.get("messageId", "UNKNOWN")
-        
+
         try:
             if ctx.get("idempotency_hit") or not ctx.get("reservation_created"):
-                self._log("debug", f"Skipping after processing", 
-                         msg_id=msg_id, hit=ctx.get('idempotency_hit'), 
-                         reservation=ctx.get('reservation_created'))
+                self._log(
+                    "debug",
+                    f"Skipping after processing",
+                    msg_id=msg_id,
+                    hit=ctx.get("idempotency_hit"),
+                    reservation=ctx.get("reservation_created"),
+                )
                 return
-            
+
             if self.use_strong_consistency and idempotency_key:
                 if error:
-                    self._log("debug", f"Updating record with failure status", msg_id=msg_id)
+                    self._log(
+                        "debug", f"Updating record with failure status", msg_id=msg_id
+                    )
                     failure_record = {
                         "status": "FAILED",
                         "finished_at": int(time.time()),
                         "error": str(error),
-                        "error_type": type(error).__name__
+                        "error_type": type(error).__name__,
                     }
                     await self.store.update(idempotency_key, failure_record)
                 else:
-                    self._log("debug", f"Updating record with completion status", msg_id=msg_id)
+                    self._log(
+                        "debug",
+                        f"Updating record with completion status",
+                        msg_id=msg_id,
+                    )
                     completion_record = {
                         "status": "COMPLETED",
                         "finished_at": int(time.time()),
-                        "result": ctx.get("handler_result")
+                        "result": ctx.get("handler_result"),
                     }
                     await self.store.update(idempotency_key, completion_record)
             elif not error and idempotency_key:
-                self._log("debug", f"Storing idempotency record for successful processing", msg_id=msg_id)
+                self._log(
+                    "debug",
+                    f"Storing idempotency record for successful processing",
+                    msg_id=msg_id,
+                )
                 idempotency_record = {
                     "timestamp": int(time.time()),
                     "message_id": record.get("messageId"),
                     "result": ctx.get("handler_result"),
-                    "status": "completed"
+                    "status": "completed",
                 }
-                
-                await self.store.put(idempotency_key, idempotency_record, self.ttl_seconds)
-            
+
+                await self.store.put(
+                    idempotency_key, idempotency_record, self.ttl_seconds
+                )
+
             if ctx.get("entity_locked") and entity_key and idempotency_key:
                 print(f"[IDEMPOTENCY] {msg_id} - Releasing entity lock")
                 await self._release_entity_lock(entity_key, idempotency_key)
-        
+
         except Exception as e:
-            print(f"[IDEMPOTENCY] {msg_id} - Error during after processing: {type(e).__name__}: {e}")
+            print(
+                f"[IDEMPOTENCY] {msg_id} - Error during after processing: {type(e).__name__}: {e}"
+            )
             if ctx.get("entity_locked") and entity_key and idempotency_key:
                 try:
-                    print(f"[IDEMPOTENCY] {msg_id} - Attempting to release entity lock after error")
+                    print(
+                        f"[IDEMPOTENCY] {msg_id} - Attempting to release entity lock after error"
+                    )
                     await self._release_entity_lock(entity_key, idempotency_key)
                 except Exception as lock_error:
-                    print(f"[IDEMPOTENCY] {msg_id} - Failed to release entity lock: {lock_error}")
-            
+                    print(
+                        f"[IDEMPOTENCY] {msg_id} - Failed to release entity lock: {lock_error}"
+                    )
+
             if self.fail_on_store_errors or not self.skip_on_error:
-                raise IdempotencyStoreError(f"Failed to update idempotency record: {str(e)}")
+                raise IdempotencyStoreError(
+                    f"Failed to update idempotency record: {str(e)}"
+                )
             ctx["idempotency_store_error"] = str(e)
 
 
 class IdempotencyHit(Exception):
-    
+
     def __init__(self, key: str, result: Any = None, timestamp: Optional[float] = None):
         self.key = key
         self.result = result
@@ -587,7 +733,7 @@ class IdempotencyHit(Exception):
 
 
 class IdempotencyInProgress(Exception):
-    
+
     def __init__(self, key: str, created_at: Optional[float] = None):
         self.key = key
         self.created_at = created_at
@@ -595,7 +741,7 @@ class IdempotencyInProgress(Exception):
 
 
 class IdempotencyFailedPreviously(Exception):
-    
+
     def __init__(self, key: str, error: Any = None, timestamp: Optional[float] = None):
         self.key = key
         self.error = error
@@ -604,7 +750,7 @@ class IdempotencyFailedPreviously(Exception):
 
 
 class EntityLockAcquisitionFailed(Exception):
-    
+
     def __init__(self, entity_key: str, idempotency_key: str):
         self.entity_key = entity_key
         self.idempotency_key = idempotency_key
@@ -612,7 +758,7 @@ class EntityLockAcquisitionFailed(Exception):
 
 
 class IdempotencyStoreError(Exception):
-    
+
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
