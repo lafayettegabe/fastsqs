@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pydantic import BaseModel, model_validator
 from typing import Any, Dict, Optional, Set
 import re
@@ -66,5 +67,5 @@ class SQSEvent(BaseModel):
     @classmethod
     def from_sqs_record(cls, record: Dict[str, Any]) -> "SQSEvent":
         import json
-        body = json.loads(record.get("body", "{}"))
+        body = json.loads(record.get("body", "{}"), parse_float=Decimal)
         return cls.model_validate(body)
