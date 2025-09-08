@@ -1,4 +1,4 @@
-from fastsqs import FastSQS, QueueRouter, SQSEvent, LoggingMiddleware, TimingMsMiddleware
+from fastsqs import FastSQS, SQSRouter, SQSEvent, LoggingMiddleware, TimingMsMiddleware
 import json
 
 
@@ -6,26 +6,33 @@ class CreateUser(SQSEvent):
     name: str
     email: str = None
 
+
 class CreateOrder(SQSEvent):
     order_id: str
+
 
 class UpdateUser(SQSEvent):
     user_id: str
     name: str
 
+
 class DeleteUser(SQSEvent):
     user_id: str
 
+
 class SearchUsers(SQSEvent):
     query: str
+
 
 class WriteToRds(SQSEvent):
     table: str
     data: dict = None
 
+
 class WriteToCache(SQSEvent):
     key: str
     value: str = None
+
 
 class UnknownAction(SQSEvent):
     data: str = None
@@ -38,10 +45,10 @@ app = FastSQS(
     debug=True,
 )
 
-router = QueueRouter("action")
+router = SQSRouter(key="action")
 
-create_router = QueueRouter("entity")
-db_router = QueueRouter("db")
+create_router = SQSRouter(key="entity")
+db_router = SQSRouter(key="db")
 
 router.subrouter("create", create_router)
 router.subrouter("write", db_router)
@@ -50,6 +57,7 @@ app.add_middleware(LoggingMiddleware(mask_fields=["password"]))
 app.add_middleware(TimingMsMiddleware())
 
 app.include_router(router)
+
 
 @create_router.route("user")
 async def handle_create_user(msg: CreateUser):

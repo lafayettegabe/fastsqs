@@ -1,7 +1,7 @@
 from .entry import RouteEntry
-from .router import QueueRouter
+from .router import SQSRouter
 
 __all__ = [
     "RouteEntry",
-    "QueueRouter",
+    "SQSRouter",
 ]

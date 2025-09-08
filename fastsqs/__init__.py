@@ -1,32 +1,46 @@
 from .types import QueueType, Handler, RouteValue
 from .exceptions import RouteNotFound, InvalidMessage
 from .app import FastSQS
-from .routing import QueueRouter, RouteEntry
+from .routing import SQSRouter, RouteEntry
 from .middleware import (
-    Middleware, TimingMsMiddleware, LoggingMiddleware,
-    IdempotencyMiddleware, IdempotencyStore, MemoryIdempotencyStore, DynamoDBIdempotencyStore,
-    ErrorHandlingMiddleware, RetryConfig, CircuitBreaker, DeadLetterQueueMiddleware,
-    VisibilityTimeoutMonitor, ProcessingTimeMiddleware, QueueMetricsMiddleware,
-    ParallelizationMiddleware, ConcurrencyLimiter, ResourcePool, ParallelizationConfig, LoadBalancingMiddleware
+    Middleware,
+    TimingMsMiddleware,
+    LoggingMiddleware,
+    IdempotencyMiddleware,
+    IdempotencyStore,
+    MemoryIdempotencyStore,
+    DynamoDBIdempotencyStore,
+    ErrorHandlingMiddleware,
+    RetryConfig,
+    CircuitBreaker,
+    DeadLetterQueueMiddleware,
+    VisibilityTimeoutMonitor,
+    ProcessingTimeMiddleware,
+    QueueMetricsMiddleware,
+    ParallelizationMiddleware,
+    ConcurrencyLimiter,
+    ResourcePool,
+    ParallelizationConfig,
+    LoadBalancingMiddleware,
 )
 from .events import SQSEvent
 from .presets import MiddlewarePreset
 
 __all__ = [
     "QueueType",
-    "Handler", 
+    "Handler",
     "RouteValue",
     "RouteNotFound",
     "InvalidMessage",
     "FastSQS",
-    "QueueRouter",
-    "RouteEntry", 
+    "SQSRouter",
+    "RouteEntry",
     "Middleware",
     "TimingMsMiddleware",
     "LoggingMiddleware",
     "SQSEvent",
     "IdempotencyMiddleware",
-    "IdempotencyStore", 
+    "IdempotencyStore",
     "MemoryIdempotencyStore",
     "DynamoDBIdempotencyStore",
     "ErrorHandlingMiddleware",

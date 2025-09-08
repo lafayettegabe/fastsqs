@@ -20,8 +20,8 @@ python lambda_function.py
 
 ## What it demonstrates
 
-- Creating a QueueApp with default Standard queue type
-- Basic routing with QueueRouter
+- Creating a FastSQS app with default Standard queue type
+- Basic routing with SQSRouter
 - Processing multiple messages in parallel
 - Simple message handling without FIFO-specific attributes
 

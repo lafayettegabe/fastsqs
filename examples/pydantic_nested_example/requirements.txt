@@ -1,0 +1,2 @@
+fastsqs>=0.3.7
+pydantic>=2.0.0
