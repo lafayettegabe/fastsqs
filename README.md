@@ -7,33 +7,34 @@
 
 ---
 
-## Version 0.3.0 - Production Ready Features
+## Version 0.4.0 - Enhanced Enterprise Features
 
 > ⚠️ **Pre-1.0 Release Warning**: This library is under active development. Breaking changes may occur until version 1.0.0. Pin your version in production.
 
-### 🚀 New Enterprise Features
+### 🚀 New in Version 0.4.0
+
+- **Middleware Presets**: Quick setup with production, development, and minimal presets
+- **Enhanced Telemetry**: Advanced logging with Elasticsearch integration support
+- **Load Balancing**: Intelligent message distribution across handlers
+- **Queue Metrics**: Comprehensive queue performance monitoring
+- **Custom Middleware Framework**: Simplified custom middleware creation with examples
+
+### 🏗️ Enterprise Features (0.3.x)
 
 - **Idempotency**: Prevent duplicate message processing with memory or DynamoDB storage
 - **Advanced Error Handling**: Exponential backoff, circuit breaker, and DLQ management  
 - **Visibility Timeout Management**: Automatic monitoring and extension for long-running processes
 - **Parallelization**: Concurrent processing with semaphore-based limiting and thread pools
 
-## Recent Updates
-
-### Version 0.3.2
-- **Auto DynamoDB Table Creation**: DynamoDB idempotency store now automatically creates tables with proper schema and TTL configuration
-- **Enhanced Table Management**: Improved error handling and race condition protection for table operations
-
-### Version 0.3.1
-- **Idempotency Improvements**: Enhanced DynamoDB store reliability and error handling
-- **Bug Fixes**: Various stability improvements and edge case handling
-
 ## Key Features
 
 - 🚀 **FastAPI-like API:** Familiar decorator-based routing with automatic type inference
 - 🔒 **Pydantic Validation:** Automatic message validation and serialization using SQSEvent models
 - 🔄 **Auto Async/Sync:** Write handlers as sync or async functions - framework handles both automatically
-- �️ **Middleware Support:** Built-in and custom middleware for logging, timing, and more
+- ⚡ **Middleware Presets:** One-line setup for production, development, or minimal configurations
+- 🛡️ **Enterprise Middleware:** Idempotency, error handling, circuit breakers, and DLQ management
+- 📊 **Telemetry & Metrics:** Built-in performance monitoring and Elasticsearch logging support
+- 🔧 **Load Balancing:** Intelligent message distribution and resource management
 - 🦾 **Partial Batch Failure:** Native support for AWS Lambda batch failure responses
 - 🔀 **FIFO & Standard Queues:** Full support for both SQS queue types with proper ordering
 - 🎯 **Flexible Matching:** Automatic field name normalization (camelCase ↔ snake_case)
@@ -52,7 +53,17 @@
 ## Installation
 
 ```bash
+# Basic installation
 pip install fastsqs
+
+# With DynamoDB support (for production idempotency)
+pip install fastsqs[dynamodb]
+
+# With telemetry support (for advanced logging)
+pip install fastsqs[telemetry]
+
+# With all optional features
+pip install fastsqs[all]
 ```
 
 ---
@@ -118,14 +129,39 @@ def lambda_handler(event, context):
 
 ## Advanced Features
 
+### Middleware Presets (New in 0.4.0)
+
+```python
+# Production-ready setup in one line
+app.use_preset("production", 
+    dynamodb_table="my-idempotency-table",
+    max_concurrent=10,
+    retry_attempts=3
+)
+
+# Development setup
+app.use_preset("development")
+
+# Minimal setup
+app.use_preset("minimal")
+```
+
+### Manual Middleware Configuration
+
 ```python
 # FIFO Queue Support
 app = FastSQS(queue_type=QueueType.FIFO)
 
-# Middleware
-from fastsqs.middleware import TimingMiddleware, LoggingMiddleware
-app.add_middleware(TimingMiddleware())
+# Individual middleware
+from fastsqs.middleware import (
+    TimingMsMiddleware, LoggingMiddleware, 
+    IdempotencyMiddleware, ErrorHandlingMiddleware,
+    ParallelizationMiddleware, QueueMetricsMiddleware
+)
+app.add_middleware(TimingMsMiddleware())
 app.add_middleware(LoggingMiddleware())
+app.add_middleware(IdempotencyMiddleware())
+app.add_middleware(QueueMetricsMiddleware())
 
 # Field Matching - automatically handles camelCase ↔ snake_case
 class UserEvent(SQSEvent):
