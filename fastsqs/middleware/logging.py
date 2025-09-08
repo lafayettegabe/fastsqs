@@ -1,3 +1,5 @@
+"""Logging middleware for structured message processing logs."""
+
 import json
 import time
 import traceback
@@ -8,6 +10,12 @@ from ..utils import shallow_mask
 from ..logger.logger import Logger
 
 class LoggingMiddleware(Middleware):
+    """Middleware that provides structured logging for message processing.
+    
+    Logs detailed information about message processing including payloads,
+    timing, errors, and processing context with field masking support.
+    """
+    
     def __init__(
         self,
         logger: Optional[Callable[[dict], None]] = None,
@@ -19,6 +27,18 @@ class LoggingMiddleware(Middleware):
         verbose: bool = True,
         use_custom_logger: bool = True,
     ):
+        """Initialize logging middleware.
+        
+        Args:
+            logger: Optional custom logger function
+            level: Default log level
+            include_payload: Whether to include message payload in logs
+            include_record: Whether to include SQS record in logs
+            include_context: Whether to include Lambda context in logs
+            mask_fields: List of fields to mask in payloads
+            verbose: Enable verbose logging with additional context
+            use_custom_logger: Whether to use FastSQS custom logger
+        """
         self.level = level
         self.include_payload = include_payload
         self.include_record = include_record
@@ -48,6 +68,13 @@ class LoggingMiddleware(Middleware):
             self.logger = logger
 
     def log(self, level: str, message: str, **data) -> None:
+        """Log a message with structured data.
+        
+        Args:
+            level: Log level
+            message: Log message
+            **data: Additional structured data
+        """
         entry = {
             "ts": time.time(),
             "lvl": level.upper(),
@@ -57,6 +84,14 @@ class LoggingMiddleware(Middleware):
         self.logger(entry)
 
     async def before(self, payload, record, context, ctx):
+        """Log message processing start with context information.
+        
+        Args:
+            payload: Message payload
+            record: SQS record
+            context: Lambda context
+            ctx: Processing context
+        """
         entry = {
             "ts": time.time(),
             "lvl": self.level,
@@ -95,6 +130,15 @@ class LoggingMiddleware(Middleware):
         self.logger(entry)
 
     async def after(self, payload, record, context, ctx, error):
+        """Log message processing completion with results and errors.
+        
+        Args:
+            payload: Message payload
+            record: SQS record
+            context: Lambda context
+            ctx: Processing context
+            error: Exception if processing failed
+        """
         entry = {
             "ts": time.time(),
             "lvl": "ERROR" if error else self.level,

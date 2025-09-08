@@ -1,3 +1,9 @@
+"""FastSQS - A FastAPI-style AWS SQS message handling framework.
+
+This package provides a modern, FastAPI-inspired interface for handling
+AWS SQS messages with support for routing, middleware, validation, and more.
+"""
+
 from .types import QueueType, Handler, RouteValue
 from .exceptions import RouteNotFound, InvalidMessage
 from .app import FastSQS

@@ -16,6 +16,11 @@ from .presets import MiddlewarePreset
 
 
 class FastSQS:
+    """Main FastSQS application class for handling AWS SQS messages.
+    
+    This class provides a FastAPI-style interface for routing and processing
+    SQS messages with support for middleware, validation, and concurrency.
+    """
 
     def __init__(
         self,
@@ -29,6 +34,19 @@ class FastSQS:
         max_concurrent_messages: int = 10,
         enable_partial_batch_failure: bool = True,
     ):
+        """Initialize FastSQS application.
+        
+        Args:
+            title: Application title
+            description: Application description
+            version: Application version
+            debug: Enable debug mode
+            queue_type: SQS queue type (STANDARD or FIFO)
+            message_type_key: Key to identify message type in payload
+            flexible_matching: Enable flexible message type matching
+            max_concurrent_messages: Maximum concurrent message processing
+            enable_partial_batch_failure: Enable partial batch failure handling
+        """
         self.title = title
         self.description = description
         self.version = version
@@ -39,7 +57,6 @@ class FastSQS:
         self.max_concurrent_messages = max_concurrent_messages
         self.enable_partial_batch_failure = enable_partial_batch_failure
 
-        # Create a default internal router for main routing
         self._main_router = SQSRouter(
             key=self.message_type_key,
             message_type_key=self.message_type_key,
@@ -55,28 +72,73 @@ class FastSQS:
         *,
         middlewares: Optional[List[Middleware]] = None,
     ) -> Callable[[Handler], Handler]:
+        """Register a route for a specific SQS event model.
+        
+        Args:
+            event_model: Pydantic model class for the event
+            middlewares: Optional list of middlewares to apply
+            
+        Returns:
+            Decorator function for the handler
+        """
         return self._main_router.route(event_model, middlewares=middlewares)
 
     def default(self) -> Callable[[Handler], Handler]:
+        """Register a default handler for unmatched messages.
+        
+        Returns:
+            Decorator function for the default handler
+        """
         return self._main_router.route(None)
 
     def include_router(self, router: SQSRouter) -> None:
+        """Include an external router in the application.
+        
+        Args:
+            router: SQSRouter instance to include
+        """
         self._routers.append(router)
 
     def add_middleware(self, middleware: Middleware) -> None:
+        """Add a middleware to the application.
+        
+        Args:
+            middleware: Middleware instance to add
+        """
         middleware._app = self
         self._middlewares.append(middleware)
 
     def use(self, middleware: Middleware) -> None:
+        """Alias for add_middleware.
+        
+        Args:
+            middleware: Middleware instance to add
+        """
         self.add_middleware(middleware)
 
     def _log(self, level: str, message: str, **data) -> None:
+        """Internal logging method that routes through LoggingMiddleware.
+        
+        Args:
+            level: Log level (info, debug, error, etc.)
+            message: Log message
+            **data: Additional log data
+        """
         for middleware in self._middlewares:
             if isinstance(middleware, LoggingMiddleware) and hasattr(middleware, "log"):
                 middleware.log(level, message, **data)
                 return
 
     def use_preset(self, preset: str, **kwargs) -> None:
+        """Apply a predefined middleware preset.
+        
+        Args:
+            preset: Preset name (production, development, minimal)
+            **kwargs: Additional preset configuration
+            
+        Raises:
+            ValueError: If preset name is unknown
+        """
         if preset == "production":
             middlewares = MiddlewarePreset.production(**kwargs)
         elif preset == "development":
@@ -92,14 +154,37 @@ class FastSQS:
             self.add_middleware(middleware)
 
     def set_queue_type(self, queue_type: QueueType) -> None:
+        """Set the SQS queue type.
+        
+        Args:
+            queue_type: Queue type (STANDARD or FIFO)
+        """
         self.queue_type = queue_type
         if self.debug:
             self._log("info", f"Queue type set to: {queue_type.value}")
 
     def is_fifo_queue(self) -> bool:
+        """Check if the current queue type is FIFO.
+        
+        Returns:
+            True if queue type is FIFO, False otherwise
+        """
         return self.queue_type == QueueType.FIFO
 
     async def _handle_record(self, record: dict, context: Any) -> Optional[Any]:
+        """Handle a single SQS record.
+        
+        Args:
+            record: SQS record dictionary
+            context: Lambda context object
+            
+        Returns:
+            Handler result if successful, None otherwise
+            
+        Raises:
+            InvalidMessage: If message format is invalid
+            RouteNotFound: If no handler found for message
+        """
         body_str = record.get("body", "")
         msg_id = record.get("messageId") or record.get("message_id") or "UNKNOWN"
 
@@ -247,6 +332,15 @@ class FastSQS:
         return result
 
     async def _handle_event(self, event: dict, context: Any) -> dict:
+        """Handle SQS event with multiple records.
+        
+        Args:
+            event: SQS event dictionary containing records
+            context: Lambda context object
+            
+        Returns:
+            Dictionary with batch failure information
+        """
         records = event.get("Records", [])
         if not records:
             return {"batchItemFailures": []}
@@ -261,6 +355,15 @@ class FastSQS:
             return await self._handle_standard_event(records, context)
 
     async def _handle_standard_event(self, records: List[dict], context: Any) -> dict:
+        """Handle records for standard (non-FIFO) queue.
+        
+        Args:
+            records: List of SQS records
+            context: Lambda context object
+            
+        Returns:
+            Dictionary with batch failure information
+        """
         failures: List[Dict[str, str]] = []
 
         self._log(
@@ -307,6 +410,15 @@ class FastSQS:
         return {"batchItemFailures": failures}
 
     async def _handle_fifo_event(self, records: List[dict], context: Any) -> dict:
+        """Handle records for FIFO queue with message group ordering.
+        
+        Args:
+            records: List of SQS records
+            context: Lambda context object
+            
+        Returns:
+            Dictionary with batch failure information
+        """
         failures: List[Dict[str, str]] = []
 
         message_groups = group_records_by_message_group(records)
@@ -366,6 +478,15 @@ class FastSQS:
         return {"batchItemFailures": failures}
 
     async def _handle_record_safe(self, record: dict, context: Any) -> None:
+        """Safely handle a record with error logging.
+        
+        Args:
+            record: SQS record dictionary
+            context: Lambda context object
+            
+        Raises:
+            Exception: Re-raises any exception from record handling
+        """
         msg_id = record.get("messageId", "UNKNOWN")
         try:
             await self._handle_record(record, context)
@@ -380,6 +501,18 @@ class FastSQS:
             raise
 
     def handler(self, event: dict, context: Any) -> dict:
+        """Main synchronous handler entry point for Lambda.
+        
+        Args:
+            event: SQS event dictionary
+            context: Lambda context object
+            
+        Returns:
+            Dictionary with batch failure information
+            
+        Raises:
+            RuntimeError: If called from within an event loop
+        """
         try:
             asyncio.get_running_loop()
             raise RuntimeError(
@@ -392,4 +525,13 @@ class FastSQS:
                 raise
 
     async def async_handler(self, event: dict, context: Any) -> dict:
+        """Asynchronous handler entry point for testing.
+        
+        Args:
+            event: SQS event dictionary
+            context: Lambda context object
+            
+        Returns:
+            Dictionary with batch failure information
+        """
         return await self._handle_event(event, context)

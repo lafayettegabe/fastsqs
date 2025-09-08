@@ -1,3 +1,5 @@
+"""Predefined middleware presets for common use cases."""
+
 from __future__ import annotations
 
 from typing import Optional, Dict, Any
@@ -10,6 +12,7 @@ from .middleware import (
 
 
 class MiddlewarePreset:
+    """Factory class for creating predefined middleware configurations."""
     @staticmethod
     def production(
         dynamodb_table: Optional[str] = None,
@@ -19,6 +22,19 @@ class MiddlewarePreset:
         visibility_timeout: float = 30.0,
         circuit_breaker_threshold: int = 5
     ) -> list:
+        """Create production-ready middleware configuration.
+        
+        Args:
+            dynamodb_table: DynamoDB table name for idempotency
+            region_name: AWS region name
+            max_concurrent: Maximum concurrent message processing
+            retry_attempts: Maximum retry attempts for failed messages
+            visibility_timeout: SQS visibility timeout in seconds
+            circuit_breaker_threshold: Circuit breaker failure threshold
+            
+        Returns:
+            List of configured middleware instances
+        """
         middlewares = []
         
         middlewares.append(LoggingMiddleware(
@@ -72,6 +88,14 @@ class MiddlewarePreset:
     
     @staticmethod
     def development(max_concurrent: int = 5) -> list:
+        """Create development-friendly middleware configuration.
+        
+        Args:
+            max_concurrent: Maximum concurrent message processing
+            
+        Returns:
+            List of configured middleware instances
+        """
         middlewares = []
         
         middlewares.append(LoggingMiddleware(
@@ -105,6 +129,11 @@ class MiddlewarePreset:
     
     @staticmethod
     def minimal() -> list:
+        """Create minimal middleware configuration.
+        
+        Returns:
+            List of essential middleware instances
+        """
         return [
             LoggingMiddleware(),
             TimingMsMiddleware(),

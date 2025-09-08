@@ -1,3 +1,5 @@
+"""Parallelization and concurrency control middleware."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +10,18 @@ from .base import Middleware
 
 
 class ConcurrencyLimiter:
+    """Limits concurrent message processing using semaphores.
+    
+    Provides backpressure control and statistics for monitoring
+    concurrent processing loads.
+    """
     
     def __init__(self, max_concurrent: int = 10):
+        """Initialize concurrency limiter.
+        
+        Args:
+            max_concurrent: Maximum number of concurrent operations
+        """
         self.max_concurrent = max_concurrent
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.active_count = 0
@@ -38,8 +50,18 @@ class ConcurrencyLimiter:
 
 
 class ResourcePool:
+    """Thread pool resource management for CPU-bound operations.
+    
+    Provides controlled access to thread pool executor with
+    monitoring and graceful shutdown capabilities.
+    """
     
     def __init__(self, max_workers: int = 5):
+        """Initialize resource pool.
+        
+        Args:
+            max_workers: Maximum number of worker threads
+        """
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.active_tasks = 0
@@ -64,17 +86,33 @@ class ResourcePool:
 
 
 class ParallelizationConfig:
+    """Configuration for parallelization middleware behavior.
+    
+    Defines concurrency limits, thread pool usage, and batch processing
+    settings for optimal message processing performance.
+    """
     
     def __init__(
         self,
         max_concurrent_messages: int = 10,
-        max_concurrent_per_group: int = 1,  # For FIFO queues
+        max_concurrent_per_group: int = 1,
         use_thread_pool: bool = False,
         thread_pool_size: Optional[int] = None,
         batch_processing: bool = False,
         batch_size: int = 5,
         batch_timeout: float = 1.0
     ):
+        """Initialize parallelization configuration.
+        
+        Args:
+            max_concurrent_messages: Maximum concurrent message processing
+            max_concurrent_per_group: Maximum concurrent per FIFO group
+            use_thread_pool: Whether to use thread pool for CPU-bound tasks
+            thread_pool_size: Size of thread pool (None for default)
+            batch_processing: Enable batch processing mode
+            batch_size: Number of messages per batch
+            batch_timeout: Timeout for incomplete batches in seconds
+        """
         self.max_concurrent_messages = max_concurrent_messages
         self.max_concurrent_per_group = max_concurrent_per_group
         self.use_thread_pool = use_thread_pool
@@ -85,6 +123,11 @@ class ParallelizationConfig:
 
 
 class ParallelizationMiddleware(Middleware):
+    """Middleware for managing concurrent and parallel message processing.
+    
+    Provides concurrency control, resource pooling, batch processing,
+    and thread pool execution for optimal performance.
+    """
     
     def __init__(
         self,
@@ -92,6 +135,13 @@ class ParallelizationMiddleware(Middleware):
         resource_pools: Optional[Dict[str, ResourcePool]] = None,
         concurrency_limiter: Optional[ConcurrencyLimiter] = None
     ):
+        """Initialize parallelization middleware.
+        
+        Args:
+            config: Parallelization configuration
+            resource_pools: Named resource pools for different operations
+            concurrency_limiter: Custom concurrency limiter instance
+        """
         super().__init__()
         self.config = config or ParallelizationConfig()
         self.resource_pools = resource_pools or {}
@@ -214,6 +264,11 @@ class ParallelizationMiddleware(Middleware):
 
 
 class LoadBalancingMiddleware(Middleware):
+    """Middleware for load balancing across multiple handlers.
+    
+    Distributes messages across registered handlers using various
+    strategies with health monitoring and automatic failover.
+    """
     
     def __init__(
         self,
@@ -221,6 +276,13 @@ class LoadBalancingMiddleware(Middleware):
         health_check_interval: float = 30.0,
         weights: Optional[Dict[str, float]] = None
     ):
+        """Initialize load balancing middleware.
+        
+        Args:
+            strategy: Load balancing strategy (round_robin, least_busy, weighted)
+            health_check_interval: Interval for health checks in seconds
+            weights: Handler weights for weighted strategy
+        """
         super().__init__()
         self.strategy = strategy
         self.health_check_interval = health_check_interval
@@ -310,12 +372,15 @@ class LoadBalancingMiddleware(Middleware):
 
 
 class ResourcePoolExhaustedError(Exception):
+    """Exception raised when resource pool is exhausted."""
     pass
 
 
 class ResourceCreationError(Exception):
+    """Exception raised when resource creation fails."""
     pass
 
 
 class BatchProcessingError(Exception):
+    """Exception raised when batch processing fails."""
     pass

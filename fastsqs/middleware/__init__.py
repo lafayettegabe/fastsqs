@@ -1,3 +1,5 @@
+"""Middleware components for FastSQS."""
+
 from .base import Middleware, run_middlewares
 from .timing import TimingMsMiddleware
 from .logging import LoggingMiddleware

@@ -1,3 +1,5 @@
+"""Visibility timeout monitoring and processing time tracking middleware."""
+
 from __future__ import annotations
 
 import time
@@ -7,14 +9,27 @@ from .base import Middleware
 
 
 class VisibilityTimeoutMonitor(Middleware):
+    """Middleware that monitors SQS visibility timeout during message processing.
+    
+    Tracks processing time and warns when approaching visibility timeout,
+    with optional callbacks for timeout extension and warnings.
+    """
     
     def __init__(
         self,
-        default_visibility_timeout: float = 30.0,  # Default SQS visibility timeout
-        warning_threshold: float = 0.8,  # Warn at 80% of timeout
+        default_visibility_timeout: float = 30.0,
+        warning_threshold: float = 0.8,
         extend_timeout_callback: Optional[Callable[[dict, dict, float], None]] = None,
         timeout_warning_callback: Optional[Callable[[dict, dict, float, float], None]] = None
     ):
+        """Initialize visibility timeout monitor.
+        
+        Args:
+            default_visibility_timeout: Default SQS visibility timeout in seconds
+            warning_threshold: Fraction of timeout at which to warn (0.8 = 80%)
+            extend_timeout_callback: Callback to extend visibility timeout
+            timeout_warning_callback: Callback for timeout warnings
+        """
         self.default_visibility_timeout = default_visibility_timeout
         self.warning_threshold = warning_threshold
         self.extend_timeout_callback = extend_timeout_callback
@@ -114,13 +129,25 @@ class VisibilityTimeoutMonitor(Middleware):
 
 
 class ProcessingTimeMiddleware(Middleware):
+    """Middleware for detailed processing time metrics and slow processing detection.
+    
+    Collects comprehensive timing metrics and warns about slow processing,
+    with optional metrics callback for external monitoring systems.
+    """
     
     def __init__(
         self,
-        slow_processing_threshold: float = 10.0,  # Warn about slow processing
+        slow_processing_threshold: float = 10.0,
         store_detailed_metrics: bool = True,
         metrics_callback: Optional[Callable[[dict], None]] = None
     ):
+        """Initialize processing time middleware.
+        
+        Args:
+            slow_processing_threshold: Threshold in seconds for slow processing warnings
+            store_detailed_metrics: Whether to store detailed metrics in context
+            metrics_callback: Optional callback for metrics export
+        """
         self.slow_processing_threshold = slow_processing_threshold
         self.store_detailed_metrics = store_detailed_metrics
         self.metrics_callback = metrics_callback
@@ -173,12 +200,23 @@ class ProcessingTimeMiddleware(Middleware):
                 except Exception as e:
                     self._log("error", f"Metrics callback error", error=str(e))
 class QueueMetricsMiddleware(Middleware):
+    """Middleware for aggregating and emitting queue-level metrics.
+    
+    Collects metrics across messages in time windows and emits
+    aggregated statistics for monitoring and alerting.
+    """
     
     def __init__(
         self,
-        metrics_aggregation_window: float = 60.0,  # 1 minute window
+        metrics_aggregation_window: float = 60.0,
         emit_metrics_callback: Optional[Callable[[dict], None]] = None
     ):
+        """Initialize queue metrics middleware.
+        
+        Args:
+            metrics_aggregation_window: Time window in seconds for metrics aggregation
+            emit_metrics_callback: Callback for emitting aggregated metrics
+        """
         self.metrics_aggregation_window = metrics_aggregation_window
         self.emit_metrics_callback = emit_metrics_callback or self._default_emit_metrics
         

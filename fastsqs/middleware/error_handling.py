@@ -1,3 +1,5 @@
+"""Error handling middleware with retry logic and circuit breaker."""
+
 from __future__ import annotations
 
 import time
@@ -7,6 +9,11 @@ from .base import Middleware
 
 
 class RetryConfig:
+    """Configuration for retry behavior.
+    
+    Defines retry policies including backoff strategies,
+    maximum attempts, and exception filtering.
+    """
     
     def __init__(
         self,
@@ -17,6 +24,16 @@ class RetryConfig:
         jitter: bool = True,
         retry_exceptions: Optional[List[type]] = None
     ):
+        """Initialize retry configuration.
+        
+        Args:
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay between retries in seconds
+            max_delay: Maximum delay between retries in seconds
+            exponential_backoff: Whether to use exponential backoff
+            jitter: Whether to add random jitter to delays
+            retry_exceptions: List of exception types to retry
+        """
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
@@ -25,12 +42,29 @@ class RetryConfig:
         self.retry_exceptions = retry_exceptions or [Exception]
     
     def should_retry(self, exception: Exception, attempt: int) -> bool:
+        """Determine if an exception should be retried.
+        
+        Args:
+            exception: Exception that occurred
+            attempt: Current attempt number
+            
+        Returns:
+            True if should retry, False otherwise
+        """
         if attempt >= self.max_retries:
             return False
         
         return any(isinstance(exception, exc_type) for exc_type in self.retry_exceptions)
     
     def get_delay(self, attempt: int) -> float:
+        """Calculate delay for next retry attempt.
+        
+        Args:
+            attempt: Current attempt number
+            
+        Returns:
+            Delay in seconds
+        """
         if self.exponential_backoff:
             delay = self.base_delay * (2 ** attempt)
         else:
@@ -46,12 +80,18 @@ class RetryConfig:
 
 
 class CircuitBreakerState:
-    CLOSED = "closed"      # Normal operation
-    OPEN = "open"          # Failing, reject requests
-    HALF_OPEN = "half_open"  # Testing if service recovered
+    """Circuit breaker state constants."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 
 class CircuitBreaker:
+    """Circuit breaker for preventing cascading failures.
+    
+    Tracks failures and opens circuit when threshold is exceeded,
+    preventing further requests until recovery timeout.
+    """
     
     def __init__(
         self,
@@ -59,6 +99,13 @@ class CircuitBreaker:
         recovery_timeout: float = 60.0,
         expected_exception: type = Exception
     ):
+        """Initialize circuit breaker.
+        
+        Args:
+            failure_threshold: Number of failures before opening circuit
+            recovery_timeout: Seconds to wait before attempting recovery
+            expected_exception: Exception type that counts as failure
+        """
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.expected_exception = expected_exception
@@ -93,6 +140,11 @@ class CircuitBreaker:
 
 
 class ErrorHandlingMiddleware(Middleware):
+    """Middleware for comprehensive error handling with retries and circuit breaking.
+    
+    Provides retry logic, circuit breaker protection, error classification,
+    and dead letter queue handling for failed messages.
+    """
     
     def __init__(
         self,
@@ -101,6 +153,14 @@ class ErrorHandlingMiddleware(Middleware):
         dead_letter_handler: Optional[Callable[[dict, dict, Exception], None]] = None,
         error_classifier: Optional[Callable[[Exception], str]] = None
     ):
+        """Initialize error handling middleware.
+        
+        Args:
+            retry_config: Retry configuration
+            circuit_breaker: Circuit breaker instance
+            dead_letter_handler: Handler for messages that exhaust retries
+            error_classifier: Function to classify errors as permanent/temporary
+        """
         super().__init__()
         self.retry_config = retry_config or RetryConfig()
         self.circuit_breaker = circuit_breaker
@@ -206,6 +266,11 @@ class ErrorHandlingMiddleware(Middleware):
 
 
 class DeadLetterQueueMiddleware(Middleware):
+    """Middleware for handling messages that cannot be processed.
+    
+    Routes failed messages to dead letter queue with timeout monitoring
+    and context preservation for debugging.
+    """
     
     def __init__(
         self,
@@ -213,6 +278,13 @@ class DeadLetterQueueMiddleware(Middleware):
         max_processing_time: Optional[float] = None,
         include_context: bool = True
     ):
+        """Initialize dead letter queue middleware.
+        
+        Args:
+            dlq_handler: Handler function for dead letter messages
+            max_processing_time: Maximum processing time before timeout
+            include_context: Whether to include processing context in DLQ records
+        """
         super().__init__()
         self.dlq_handler = dlq_handler or self._default_dlq_handler
         self.max_processing_time = max_processing_time
@@ -280,8 +352,10 @@ class DeadLetterQueueMiddleware(Middleware):
 
 
 class CircuitBreakerOpenError(Exception):
+    """Exception raised when circuit breaker is open and rejecting requests."""
     pass
 
 
 class ProcessingTimeoutError(Exception):
+    """Exception raised when message processing exceeds timeout limit."""
     pass

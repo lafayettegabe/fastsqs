@@ -1,3 +1,5 @@
+"""Idempotency middleware for preventing duplicate message processing."""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,37 +13,94 @@ logger = logging.getLogger(__name__)
 
 
 class IdempotencyStore:
+    """Abstract base class for idempotency storage backends."""
 
     async def get(
         self, key: str, consistent_read: bool = False
     ) -> Optional[Dict[str, Any]]:
+        """Retrieve a record by key.
+        
+        Args:
+            key: Idempotency key
+            consistent_read: Whether to use consistent read
+            
+        Returns:
+            Record data if found, None otherwise
+        """
         raise NotImplementedError
 
     async def put(
         self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
     ) -> None:
+        """Store a record.
+        
+        Args:
+            key: Idempotency key
+            value: Record data
+            ttl_seconds: Optional TTL in seconds
+        """
         raise NotImplementedError
 
     async def conditional_put(
         self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
     ) -> bool:
+        """Store a record only if key doesn't exist.
+        
+        Args:
+            key: Idempotency key
+            value: Record data
+            ttl_seconds: Optional TTL in seconds
+            
+        Returns:
+            True if stored, False if key already exists
+        """
         raise NotImplementedError
 
     async def update(self, key: str, updates: Dict[str, Any]) -> bool:
+        """Update an existing record.
+        
+        Args:
+            key: Idempotency key
+            updates: Fields to update
+            
+        Returns:
+            True if updated, False if key doesn't exist
+        """
         raise NotImplementedError
 
     async def delete(self, key: str) -> None:
+        """Delete a record.
+        
+        Args:
+            key: Idempotency key
+        """
         raise NotImplementedError
 
     async def conditional_delete(
         self, key: str, condition_attr: str, condition_value: Any
     ) -> bool:
+        """Delete a record conditionally.
+        
+        Args:
+            key: Idempotency key
+            condition_attr: Attribute to check
+            condition_value: Expected value
+            
+        Returns:
+            True if deleted, False if condition not met
+        """
         raise NotImplementedError
 
 
 class MemoryIdempotencyStore(IdempotencyStore):
+    """In-memory implementation of idempotency store.
+    
+    Suitable for testing and single-instance deployments.
+    Records are lost when the process restarts.
+    """
 
     def __init__(self):
+        """Initialize memory store."""
         self._store: Dict[str, Dict[str, Any]] = {}
 
     async def get(
@@ -103,6 +162,11 @@ class MemoryIdempotencyStore(IdempotencyStore):
 
 
 class DynamoDBIdempotencyStore(IdempotencyStore):
+    """DynamoDB implementation of idempotency store.
+    
+    Provides persistent, scalable idempotency storage using DynamoDB
+    with automatic table creation and TTL configuration.
+    """
 
     def __init__(
         self,
@@ -114,6 +178,20 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
         read_capacity_units: int = 5,
         write_capacity_units: int = 5,
     ):
+        """Initialize DynamoDB store.
+        
+        Args:
+            table_name: DynamoDB table name
+            key_attr: Attribute name for the primary key
+            ttl_attr: Attribute name for TTL
+            region_name: AWS region name
+            create_table: Whether to create table if it doesn't exist
+            read_capacity_units: Read capacity for table creation
+            write_capacity_units: Write capacity for table creation
+            
+        Raises:
+            ImportError: If aioboto3 is not installed
+        """
         try:
             import aioboto3
             from botocore.exceptions import ClientError
@@ -372,6 +450,12 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
 
 
 class IdempotencyMiddleware(Middleware):
+    """Middleware that prevents duplicate processing of messages.
+    
+    Uses configurable storage backend to track processed messages
+    and prevent duplicate execution with support for strong consistency
+    and per-entity sequencing.
+    """
 
     def __init__(
         self,
@@ -388,6 +472,22 @@ class IdempotencyMiddleware(Middleware):
         entity_lock_ttl_seconds: Optional[int] = None,
         sqs_visibility_timeout_seconds: int = 30,
     ):
+        """Initialize idempotency middleware.
+        
+        Args:
+            store: Storage backend for idempotency records
+            key_generator: Function to generate idempotency keys
+            ttl_seconds: TTL for idempotency records
+            skip_on_error: Whether to skip idempotency on store errors
+            use_message_deduplication_id: Use SQS deduplication ID as key
+            payload_hash_fields: Specific fields to hash for key generation
+            use_strong_consistency: Enable strong consistency mode
+            per_entity_sequencing: Enable per-entity sequencing
+            entity_key_extractor: Function to extract entity keys
+            fail_on_store_errors: Whether to fail on store errors
+            entity_lock_ttl_seconds: TTL for entity locks
+            sqs_visibility_timeout_seconds: SQS visibility timeout
+        """
         super().__init__()
         self.store = store or MemoryIdempotencyStore()
         self.key_generator = key_generator or self._default_key_generator
@@ -724,8 +824,16 @@ class IdempotencyMiddleware(Middleware):
 
 
 class IdempotencyHit(Exception):
+    """Exception raised when a message has already been processed."""
 
     def __init__(self, key: str, result: Any = None, timestamp: Optional[float] = None):
+        """Initialize idempotency hit exception.
+        
+        Args:
+            key: Idempotency key that was hit
+            result: Cached result from previous processing
+            timestamp: Timestamp of previous processing
+        """
         self.key = key
         self.result = result
         self.timestamp = timestamp
@@ -733,16 +841,31 @@ class IdempotencyHit(Exception):
 
 
 class IdempotencyInProgress(Exception):
+    """Exception raised when a message is currently being processed."""
 
     def __init__(self, key: str, created_at: Optional[float] = None):
+        """Initialize in-progress exception.
+        
+        Args:
+            key: Idempotency key that is in progress
+            created_at: Timestamp when processing started
+        """
         self.key = key
         self.created_at = created_at
         super().__init__(f"Message currently in progress: {key}")
 
 
 class IdempotencyFailedPreviously(Exception):
+    """Exception raised when a message failed processing previously."""
 
     def __init__(self, key: str, error: Any = None, timestamp: Optional[float] = None):
+        """Initialize failed-previously exception.
+        
+        Args:
+            key: Idempotency key that failed previously
+            error: Previous error details
+            timestamp: Timestamp of previous failure
+        """
         self.key = key
         self.error = error
         self.timestamp = timestamp
@@ -750,15 +873,28 @@ class IdempotencyFailedPreviously(Exception):
 
 
 class EntityLockAcquisitionFailed(Exception):
+    """Exception raised when entity lock acquisition fails."""
 
     def __init__(self, entity_key: str, idempotency_key: str):
+        """Initialize lock acquisition failure exception.
+        
+        Args:
+            entity_key: Entity key that couldn't be locked
+            idempotency_key: Idempotency key attempting the lock
+        """
         self.entity_key = entity_key
         self.idempotency_key = idempotency_key
         super().__init__(f"Failed to acquire lock for entity: {entity_key}")
 
 
 class IdempotencyStoreError(Exception):
+    """Exception raised when idempotency store operations fail."""
 
     def __init__(self, message: str):
+        """Initialize store error exception.
+        
+        Args:
+            message: Error message
+        """
         self.message = message
         super().__init__(message)

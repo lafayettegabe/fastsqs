@@ -5,25 +5,63 @@ from typing import Any, Awaitable, List, Optional
 
 
 class Middleware:
+    """Base class for FastSQS middleware.
+    
+    Middleware can hook into message processing before and after handler execution.
+    """
+    
     def __init__(self):
-        self._app = None  # Will be set by FastSQS when middleware is added
+        """Initialize middleware."""
+        self._app = None
     
     def _log(self, level: str, message: str, **data) -> None:
-        """Log method that routes through the app's logging system"""
+        """Log method that routes through the app's logging system.
+        
+        Args:
+            level: Log level (info, debug, error, etc.)
+            message: Log message
+            **data: Additional log data
+        """
         if self._app and hasattr(self._app, '_log'):
             self._app._log(level, message, **data)
-        # If no app or logging available, silently do nothing
     
     async def before(self, payload: dict, record: dict, context: Any, ctx: dict) -> None:
+        """Hook called before handler execution.
+        
+        Args:
+            payload: Message payload
+            record: SQS record
+            context: Lambda context
+            ctx: Processing context
+        """
         return None
 
     async def after(
         self, payload: dict, record: dict, context: Any, ctx: dict, error: Optional[Exception]
     ) -> None:
+        """Hook called after handler execution.
+        
+        Args:
+            payload: Message payload
+            record: SQS record
+            context: Lambda context
+            ctx: Processing context
+            error: Exception if handler failed, None otherwise
+        """
         return None
 
 
 def call_middleware_hook(mw: Middleware, hook: str, *args) -> Awaitable[None]:
+    """Call a middleware hook method safely.
+    
+    Args:
+        mw: Middleware instance
+        hook: Hook method name ('before' or 'after')
+        *args: Arguments to pass to hook
+        
+    Returns:
+        Awaitable that resolves to None
+    """
     fn = getattr(mw, hook, None)
     if fn is None:
         async def _noop():
@@ -48,6 +86,20 @@ async def run_middlewares(
     ctx: dict,
     error: Optional[Exception] = None,
 ) -> None:
+    """Run middleware chain for specified phase.
+    
+    Args:
+        mws: List of middleware instances
+        when: Phase ('before' or 'after')
+        payload: Message payload
+        record: SQS record
+        context: Lambda context
+        ctx: Processing context
+        error: Exception if in 'after' phase with error
+        
+    Raises:
+        ValueError: If 'when' parameter is invalid
+    """
     if when == "before":
         for mw in mws:
             await call_middleware_hook(mw, "before", payload, record, context, ctx)
