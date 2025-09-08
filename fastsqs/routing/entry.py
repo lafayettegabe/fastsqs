@@ -14,13 +14,14 @@ if TYPE_CHECKING:
 @dataclass
 class RouteEntry:
     """Data class representing a route entry in the router.
-    
+
     Attributes:
         handler: Optional handler function for the route
         model: Optional Pydantic model for validation
         middlewares: List of middlewares to apply
         subrouter: Optional nested router
     """
+
     handler: Optional[Handler] = None
     model: Optional[type[BaseModel]] = None
     middlewares: List[Middleware] = field(default_factory=list)
@@ -29,7 +30,7 @@ class RouteEntry:
     @property
     def is_nested(self) -> bool:
         """Check if this route entry has a nested subrouter.
-        
+
         Returns:
             True if subrouter is present, False otherwise
         """
