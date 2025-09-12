@@ -3,6 +3,7 @@ from enum import Enum
 
 from .config import OtelConfig
 from .utils import get_elastic_client, build_log_entry
+from .state import LoggingStateManager
 
 
 class Environment(Enum):
@@ -22,11 +23,13 @@ class ElasticsearchHandler(logging.Handler):
         Environment.PRODUCTION.value,
         Environment.HOMOLOG.value
     }
-    
+
     def __init__(self, index_name=None, use_otel=USE_OTEL):
         super().__init__()
 
-        self.enable_logging = use_otel and OTEL_ENVIRONMENT in self.ELASTICSEARCH_ENVIRONMENTS
+        self.enable_logging = (use_otel and
+                               OTEL_ENVIRONMENT in
+                               self.ELASTICSEARCH_ENVIRONMENTS)
 
         if self.enable_logging:
             self.es_client = get_elastic_client()
@@ -40,11 +43,14 @@ class ElasticsearchHandler(logging.Handler):
             if not self.enable_logging:
                 return
 
+            context_info = LoggingStateManager.get_context_info()
+
             log_entry = build_log_entry(
                 record=record,
                 service_name=OTEL_SERVICE_NAME,
                 environment=OTEL_ENVIRONMENT,
-                formatter=self
+                formatter=self,
+                context_info=context_info
             )
 
             if self.es_client:

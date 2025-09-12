@@ -2,20 +2,21 @@
 
 import logging
 import json
-import os
 
 from .config import OtelConfig
 from ..concurrency.decorators import background
 from .elasticsearch_handler import ElasticsearchHandler
+from .state import LoggingStateManager
 
 otel_config = OtelConfig()
 USE_OTEL = otel_config.use_otel
 
+
 class Logger:
     """Singleton logger with configurable handlers and background logging.
-    
-    Provides structured logging with optional OpenTelemetry and
-    Elasticsearch integration for distributed tracing and log aggregation.
+
+    Uses ContextVar-based state management for request-specific context
+    while maintaining singleton pattern for logger configuration.
     """
     _instance = None
 
@@ -43,7 +44,7 @@ class Logger:
 
     def _add_handler(self, handler):
         """Add a handler to the logger with proper formatting.
-        
+
         Args:
             handler: Logging handler to add
         """
@@ -59,7 +60,7 @@ class Logger:
     @background
     def log(self, level, message, **data):
         """Log a message with structured data in background.
-        
+
         Args:
             level: Log level (debug, info, warning, error, etc.)
             message: Log message
@@ -68,7 +69,74 @@ class Logger:
         log_method = getattr(self._logger, level, self._logger.debug)
         if data:
             try:
-                message = f"{message} | data: {json.dumps(data, default=str)}"
+                json_data = json.dumps(data, default=str)
+                message = f"{message} | data: {json_data}"
             except Exception:
                 message = f"{message} | data: {data}"
         log_method(message)
+
+    @staticmethod
+    def set_lambda_context(lambda_context, request_id=None, custom_fields=None):
+        """Set Lambda context for current execution context.
+
+        Args:
+            lambda_context: AWS Lambda context object
+            request_id: Optional custom request ID
+                       (uses aws_request_id if not provided)
+            custom_fields: Optional dictionary of custom fields to
+                          include in logs
+        """
+        LoggingStateManager.set_lambda_context(
+            lambda_context=lambda_context,
+            request_id=request_id,
+            custom_fields=custom_fields
+        )
+
+    @staticmethod
+    def set_request_id(request_id, custom_fields=None):
+        """Set request ID for current execution context.
+
+        Args:
+            request_id: Request ID for tracing
+            custom_fields: Optional dictionary of custom fields to
+                          include in logs
+        """
+        LoggingStateManager.set_request_id(
+            request_id=request_id,
+            custom_fields=custom_fields
+        )
+
+    @staticmethod
+    def update_custom_fields(custom_fields):
+        """Update custom fields for current execution context.
+
+        Args:
+            custom_fields: Dictionary of custom fields to add/update
+        """
+        LoggingStateManager.update_custom_fields(custom_fields)
+
+    @staticmethod
+    def clear_context():
+        """Clear current execution context."""
+        LoggingStateManager.clear()
+
+    # Convenience methods for common log levels
+    def info(self, message, **data):
+        """Log info message."""
+        self.log('info', message, **data)
+
+    def debug(self, message, **data):
+        """Log debug message."""
+        self.log('debug', message, **data)
+
+    def warning(self, message, **data):
+        """Log warning message."""
+        self.log('warning', message, **data)
+
+    def error(self, message, **data):
+        """Log error message."""
+        self.log('error', message, **data)
+
+    def critical(self, message, **data):
+        """Log critical message."""
+        self.log('critical', message, **data)

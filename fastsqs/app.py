@@ -13,6 +13,7 @@ from .middleware.logging import LoggingMiddleware
 from .routing import SQSRouter
 from .utils import group_records_by_message_group
 from .presets import MiddlewarePreset
+from .logger import Logger
 
 
 class FastSQS:
@@ -341,6 +342,16 @@ class FastSQS:
         Returns:
             Dictionary with batch failure information
         """
+        Logger.set_lambda_context(
+            lambda_context=context,
+            custom_fields={
+                'app_title': self.title,
+                'app_version': self.version,
+                'queue_type': self.queue_type.value,
+                'debug_mode': self.debug
+            }
+        )
+        
         records = event.get("Records", [])
         if not records:
             return {"batchItemFailures": []}

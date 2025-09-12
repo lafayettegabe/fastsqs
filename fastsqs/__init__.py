@@ -31,6 +31,7 @@ from .middleware import (
 )
 from .events import SQSEvent
 from .presets import MiddlewarePreset
+from .logger import Logger
 
 __all__ = [
     "QueueType",
@@ -62,4 +63,5 @@ __all__ = [
     "ParallelizationConfig",
     "LoadBalancingMiddleware",
     "MiddlewarePreset",
+    "Logger",
 ]
