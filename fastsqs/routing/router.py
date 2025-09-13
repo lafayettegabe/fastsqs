@@ -461,15 +461,23 @@ class SQSRouter:
             params = list(sig.parameters.keys())
 
             if len(params) >= 2 and "ctx" in params[1]:
-                if inspect.iscoroutinefunction(handler):
-                    result = await handler(msg, ctx)
-                else:
-                    result = handler(msg, ctx)
+                result = await invoke_handler(
+                    handler,
+                    msg=msg,
+                    ctx=ctx,
+                    payload=handler_payload,
+                    record=record,
+                    context=context
+                )
             else:
-                if inspect.iscoroutinefunction(handler):
-                    result = await handler(msg)
-                else:
-                    result = handler(msg)
+                result = await invoke_handler(
+                    handler,
+                    msg=msg,
+                    payload=handler_payload,
+                    record=record,
+                    context=context,
+                    ctx=ctx
+                )
 
             ctx["handler_result"] = result
 

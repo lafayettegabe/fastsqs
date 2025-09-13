@@ -14,6 +14,8 @@ from .routing import SQSRouter
 from .utils import group_records_by_message_group
 from .presets import MiddlewarePreset
 from .logger import Logger
+from .telemetry import Telemetry
+from .concurrency.concurrency import ThreadPoolManager
 
 
 class FastSQS:
@@ -332,6 +334,11 @@ class FastSQS:
         self._log("info", f"Record processing completed successfully", msg_id=msg_id)
         return result
 
+    def _cleanup_resources(self) -> None:
+        """Clean up background tasks and flush telemetry data."""
+        ThreadPoolManager().wait_for_completion()
+        Telemetry().force_flush()
+
     async def _handle_event(self, event: dict, context: Any) -> dict:
         """Handle SQS event with multiple records.
         
@@ -354,6 +361,7 @@ class FastSQS:
         
         records = event.get("Records", [])
         if not records:
+            self._cleanup_resources()
             return {"batchItemFailures": []}
 
         if self.debug:
@@ -418,6 +426,9 @@ class FastSQS:
             succeeded=len(records) - len(failures),
             failed=len(failures),
         )
+        
+        self._cleanup_resources()
+        
         return {"batchItemFailures": failures}
 
     async def _handle_fifo_event(self, records: List[dict], context: Any) -> dict:
@@ -486,6 +497,8 @@ class FastSQS:
                         "error", f"Message group processing failed", error=str(result)
                     )
 
+        self._cleanup_resources()
+        
         return {"batchItemFailures": failures}
 
     async def _handle_record_safe(self, record: dict, context: Any) -> None:

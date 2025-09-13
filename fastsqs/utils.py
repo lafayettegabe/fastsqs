@@ -6,6 +6,7 @@ import inspect
 from typing import Any, Awaitable, Callable, Dict, List
 
 from .types import Handler
+from .telemetry import trace_function, SpanKind
 
 
 def group_records_by_message_group(
@@ -54,21 +55,16 @@ def select_kwargs(fn: Handler, **candidates) -> Dict[str, Any]:
 
 
 async def invoke_handler(fn: Handler, **kwargs) -> Any:
-    """Invoke a handler function with appropriate arguments.
+    handler_name = getattr(fn, "__name__", "unknown_handler")
+    span_name = f"handler.{handler_name}"
     
-    Args:
-        fn: Handler function to invoke
-        **kwargs: Keyword arguments to pass
-        
-    Returns:
-        Handler result
-    """
     kw = select_kwargs(fn, **kwargs)
+    traced_handler = trace_function(span_name, SpanKind.SERVER)(fn)
     
-    if inspect.iscoroutinefunction(fn):
-        result = await fn(**kw)
+    if inspect.iscoroutinefunction(traced_handler):
+        result = await traced_handler(**kw)
     else:
-        result = fn(**kw)
+        result = traced_handler(**kw)
         if inspect.isawaitable(result):
             result = await result
     
