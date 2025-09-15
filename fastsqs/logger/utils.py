@@ -12,8 +12,17 @@ _es_client = None
 def filter_extra_fields(record_dict):
     """Filter and return allowed extra fields from log record."""
     allowed_fields = {"data", "extra", "custom"}
-    filtered = {key: value for key, value in record_dict.items() if key in allowed_fields}
-    return filtered if filtered else {}
+    filtered = {}
+    
+    for key, value in record_dict.items():
+        if key in allowed_fields:
+            # If it's the data field and it's a dict, include it directly for proper JSON formatting
+            if key == "data" and isinstance(value, dict):
+                filtered.update(value)
+            else:
+                filtered[key] = value
+    
+    return filtered
 
 
 def get_elastic_client():

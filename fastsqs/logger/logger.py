@@ -68,12 +68,10 @@ class Logger:
         """
         log_method = getattr(self._logger, level, self._logger.debug)
         if data:
-            try:
-                json_data = json.dumps(data, default=str)
-                message = f"{message} | data: {json_data}"
-            except Exception:
-                message = f"{message} | data: {data}"
-        log_method(message)
+            # Pass data as extra fields to the LogRecord
+            log_method(message, extra={'data': data})
+        else:
+            log_method(message)
 
     @staticmethod
     def set_lambda_context(lambda_context, request_id=None, custom_fields=None):
