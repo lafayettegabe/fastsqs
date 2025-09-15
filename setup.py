@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="fastsqs",
-    version="0.4.1",
-    description="FastAPI-like, modern async SQS message processing for Python with advanced features",
+    version="0.4.2",
+    description="FastAPI-like, modern SQS message processing for Python with advanced features",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Gabriel LaFayette",
