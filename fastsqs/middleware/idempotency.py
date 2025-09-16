@@ -7,10 +7,35 @@ import hashlib
 import json
 import logging
 import time
+from decimal import Decimal
 from typing import Any, Dict, Optional, Set, Callable, Union
 from .base import Middleware
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_floats_to_decimal(obj: Any) -> Any:
+    """Convert float values to Decimal for DynamoDB compatibility.
+    
+    DynamoDB doesn't support Python float types directly and requires
+    Decimal types for numeric values with decimal places.
+    
+    Args:
+        obj: Object to convert (can be dict, list, or primitive)
+        
+    Returns:
+        Object with floats converted to Decimal
+    """
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    elif isinstance(obj, dict):
+        return {k: _convert_floats_to_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_convert_floats_to_decimal(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_convert_floats_to_decimal(item) for item in obj)
+    else:
+        return obj
 
 
 class IdempotencyStore:
@@ -339,7 +364,9 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
     async def put(
         self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
     ) -> None:
-        item = {self.key_attr: key, **value}
+        # Convert floats to Decimal for DynamoDB compatibility
+        converted_value = _convert_floats_to_decimal(value)
+        item = {self.key_attr: key, **converted_value}
         if ttl_seconds:
             item[self.ttl_attr] = int(time.time() + ttl_seconds)
 
@@ -356,7 +383,9 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
     async def conditional_put(
         self, key: str, value: Dict[str, Any], ttl_seconds: Optional[int] = None
     ) -> bool:
-        item = {self.key_attr: key, **value}
+        # Convert floats to Decimal for DynamoDB compatibility
+        converted_value = _convert_floats_to_decimal(value)
+        item = {self.key_attr: key, **converted_value}
         if ttl_seconds:
             item[self.ttl_attr] = int(time.time() + ttl_seconds)
 
@@ -387,14 +416,17 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
         """Update with exponential backoff retry for transient errors."""
         for attempt in range(max_retries):
             try:
+                # Convert floats to Decimal for DynamoDB compatibility
+                converted_updates = _convert_floats_to_decimal(updates)
+                
                 update_expression_parts = []
                 expression_attribute_values = {}
 
-                for k, v in updates.items():
+                for k, v in converted_updates.items():
                     update_expression_parts.append(f"#{k} = :{k}")
                     expression_attribute_values[f":{k}"] = v
 
-                expression_attribute_names = {f"#{k}": k for k in updates.keys()}
+                expression_attribute_names = {f"#{k}": k for k in converted_updates.keys()}
                 expression_attribute_names[f"#{self.key_attr}"] = self.key_attr
 
                 await self._ensure_table_exists()
