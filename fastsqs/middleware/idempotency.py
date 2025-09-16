@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -382,37 +383,58 @@ class DynamoDBIdempotencyStore(IdempotencyStore):
                 return False
             raise
 
+    async def _update_with_retry(self, key: str, updates: Dict[str, Any], max_retries: int = 3) -> bool:
+        """Update with exponential backoff retry for transient errors."""
+        for attempt in range(max_retries):
+            try:
+                update_expression_parts = []
+                expression_attribute_values = {}
+
+                for k, v in updates.items():
+                    update_expression_parts.append(f"#{k} = :{k}")
+                    expression_attribute_values[f":{k}"] = v
+
+                expression_attribute_names = {f"#{k}": k for k in updates.keys()}
+                expression_attribute_names[f"#{self.key_attr}"] = self.key_attr
+
+                await self._ensure_table_exists()
+                async with self.session.resource(
+                    "dynamodb", region_name=self.region_name
+                ) as dynamodb:
+                    table = await dynamodb.Table(self.table_name)
+                    await table.update_item(
+                        Key={self.key_attr: key},
+                        UpdateExpression="SET " + ", ".join(update_expression_parts),
+                        ExpressionAttributeNames=expression_attribute_names,
+                        ExpressionAttributeValues=expression_attribute_values,
+                        ConditionExpression=f"attribute_exists(#{self.key_attr})",
+                    )
+                return True
+            except self.ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                if error_code == "ConditionalCheckFailedException":
+                    logger.warning(f"DynamoDB update failed: Record {key} does not exist")
+                    return False
+                elif error_code in ["ProvisionedThroughputExceededException", "ThrottlingException", "ServiceUnavailable"]:
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 0.1  # Exponential backoff: 0.1s, 0.2s, 0.4s
+                        logger.warning(f"DynamoDB transient error for key {key} (attempt {attempt + 1}/{max_retries}): {error_code}, retrying in {wait_time}s")
+                        await asyncio.sleep(wait_time)
+                        continue
+                logger.error(f"DynamoDB update failed for key {key}: {error_code} - {e.response['Error']['Message']}")
+                raise
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.1
+                    logger.warning(f"DynamoDB update error for key {key} (attempt {attempt + 1}/{max_retries}): {type(e).__name__}: {e}, retrying in {wait_time}s")
+                    await asyncio.sleep(wait_time)
+                    continue
+                logger.error(f"DynamoDB update failed for key {key}: {type(e).__name__}: {e}")
+                raise
+        return False
+
     async def update(self, key: str, updates: Dict[str, Any]) -> bool:
-        try:
-            update_expression_parts = []
-            expression_attribute_values = {}
-
-            for k, v in updates.items():
-                update_expression_parts.append(f"#{k} = :{k}")
-                expression_attribute_values[f":{k}"] = v
-
-            expression_attribute_names = {f"#{k}": k for k in updates.keys()}
-            expression_attribute_names[f"#{self.key_attr}"] = self.key_attr
-
-            await self._ensure_table_exists()
-            async with self.session.resource(
-                "dynamodb", region_name=self.region_name
-            ) as dynamodb:
-                table = await dynamodb.Table(self.table_name)
-                await table.update_item(
-                    Key={self.key_attr: key},
-                    UpdateExpression="SET " + ", ".join(update_expression_parts),
-                    ExpressionAttributeNames=expression_attribute_names,
-                    ExpressionAttributeValues=expression_attribute_values,
-                    ConditionExpression=f"attribute_exists(#{self.key_attr})",
-                )
-            return True
-        except self.ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return False
-            raise
-        except Exception:
-            return False
+        return await self._update_with_retry(key, updates)
 
     async def delete(self, key: str) -> None:
         try:
@@ -767,7 +789,31 @@ class IdempotencyMiddleware(Middleware):
                         "error": str(error),
                         "error_type": type(error).__name__,
                     }
-                    await self.store.update(idempotency_key, failure_record)
+                    update_success = await self.store.update(idempotency_key, failure_record)
+                    if not update_success:
+                        self._log(
+                            "warning",
+                            f"Failed to update idempotency record to FAILED status - record may not exist, attempting cleanup",
+                            msg_id=msg_id,
+                            idempotency_key=idempotency_key,
+                        )
+                        # Attempt to delete the record to prevent it from staying IN_PROGRESS
+                        try:
+                            await self.store.delete(idempotency_key)
+                            self._log(
+                                "info",
+                                f"Deleted stuck idempotency record",
+                                msg_id=msg_id,
+                                idempotency_key=idempotency_key,
+                            )
+                        except Exception as delete_error:
+                            self._log(
+                                "error",
+                                f"Failed to delete stuck idempotency record",
+                                msg_id=msg_id,
+                                idempotency_key=idempotency_key,
+                                error=str(delete_error),
+                            )
                 else:
                     self._log(
                         "debug",
@@ -779,7 +825,31 @@ class IdempotencyMiddleware(Middleware):
                         "finished_at": int(time.time()),
                         "result": ctx.get("handler_result"),
                     }
-                    await self.store.update(idempotency_key, completion_record)
+                    update_success = await self.store.update(idempotency_key, completion_record)
+                    if not update_success:
+                        self._log(
+                            "warning",
+                            f"Failed to update idempotency record to COMPLETED status - record may not exist, attempting cleanup",
+                            msg_id=msg_id,
+                            idempotency_key=idempotency_key,
+                        )
+                        # Attempt to delete the record to prevent it from staying IN_PROGRESS
+                        try:
+                            await self.store.delete(idempotency_key)
+                            self._log(
+                                "info",
+                                f"Deleted stuck idempotency record",
+                                msg_id=msg_id,
+                                idempotency_key=idempotency_key,
+                            )
+                        except Exception as delete_error:
+                            self._log(
+                                "error",
+                                f"Failed to delete stuck idempotency record",
+                                msg_id=msg_id,
+                                idempotency_key=idempotency_key,
+                                error=str(delete_error),
+                            )
             elif not error and idempotency_key:
                 self._log(
                     "debug",
